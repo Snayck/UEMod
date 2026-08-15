@@ -1,0 +1,36 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug C++ Example",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/Debug/cpp_example.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/build/bin/Debug",
+            "environment": [],
+            "console": "integratedTerminal",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "Release C++ Example",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/Release/cpp_example.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/build/bin/Release",
+            "environment": [],
+            "console": "integratedTerminal",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "Debug DLL (Attach to Process)",
+            "type": "cppvsdbg",
+            "request": "attach",
+            "processId": "${command:pickProcess}",
+            "symbolSearchPath": "${workspaceFolder}/build/bin/Debug"
+        }
+    ]
+}

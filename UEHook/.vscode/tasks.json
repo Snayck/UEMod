@@ -1,0 +1,44 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "CMake: Configure",
+            "type": "cmake",
+            "command": "configure",
+            "group": "build",
+            "problemMatcher": [],
+            "detail": "Configure CMake project"
+        },
+        {
+            "label": "CMake: Build",
+            "type": "cmake",
+            "command": "build",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "detail": "Build the project"
+        },
+        {
+            "label": "CMake: Clean",
+            "type": "cmake",
+            "command": "clean",
+            "group": "build",
+            "problemMatcher": [],
+            "detail": "Clean build artifacts"
+        },
+        {
+            "label": "CMake: Clean Rebuild",
+            "type": "cmake",
+            "command": "cleanRebuild",
+            "group": "build",
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "detail": "Clean and rebuild the project"
+        }
+    ]
+}
