@@ -28,6 +28,10 @@ set(NE_SOURCES
     ${NE_UTIL}/widgets.cpp
     ${NE_UTIL}/drawing.cpp
 )
+
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../UEHook ${CMAKE_BINARY_DIR}/UEHook)
+
 # target
 add_executable(UEEditor
     src/main.cpp
@@ -51,4 +55,5 @@ target_link_libraries(UEEditor PRIVATE
     d3d11
     dxgi
     d3dcompiler
+    UEHook           # reflection + hooking backend (brings its own include dirs)
 )

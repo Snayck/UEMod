@@ -21,6 +21,7 @@ enum class PinType {
     Object,   // UObject*
     Struct,   // in-place struct]
     Array,    // TArray
+    Any,      // any UEValue, runtime-typed
     // Set, Map
 };
 
@@ -35,6 +36,8 @@ struct Pin {
     PinType		Type;
     PinKind		Kind = PinKind::Input;
 	std::string DefaultValue;
+	bool        Selectable = false;
+	bool        SelectorOpen = false;
 
     Pin(int id, const char* name, PinType type)
         : ID(id), Name(name), Type(type) {}
@@ -83,6 +86,7 @@ struct Graph {
 			case PinType::Object: return ImColor( 51, 150, 215);
 			case PinType::Struct: return ImColor(180, 120, 255);
 			case PinType::Array:  return ImColor(120, 120, 255);
+			case PinType::Any:    return ImColor(200, 200, 200);
 			default:              return ImColor(255, 255, 255);
 		}
 	}
