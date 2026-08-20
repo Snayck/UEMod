@@ -43,8 +43,8 @@ namespace Nodes {
 
     // Events
 
-    inline Node* SpawnInitScriptNode(Graph& g) {
-        Node* n = Begin(g, "OnInitialize", Col::Event);
+    inline Node* SpawnScriptStartNode(Graph& g) {
+        Node* n = Begin(g, "ScriptStart", Col::Event);
         Out(g, n, "", PinType::Flow);
         BuildNode(n); return n;
     }

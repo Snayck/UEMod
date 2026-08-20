@@ -160,7 +160,7 @@ namespace
             void* o = ObjectArray::GetByIndex(i);
             if (!o) continue;
             UEObject obj(o);
-            if (obj.GetClassName() == "Function" && obj.GetName() == name)
+            if (obj.GetClassName() == "Function" && UENames::EqualsCI(obj.GetName(), name))
                 return UEFunction(o);
         }
         return UEFunction();

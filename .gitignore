@@ -32,3 +32,4 @@
 *.app
 
 /UEEditor/build/
+/UEEditor/build-dll/

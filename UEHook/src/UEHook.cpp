@@ -141,7 +141,7 @@ namespace UE
             void* o = ObjectArray::GetByIndex(i);
             if (!o) continue;
             UEObject obj(o);
-            if (obj.GetName() != name) continue;
+            if (!UENames::EqualsCI(obj.GetName(), name)) continue;
             if (!className.empty() && !obj.IsA(className)) continue;
             return obj;
         }
@@ -156,7 +156,7 @@ namespace UE
             void* o = ObjectArray::GetByIndex(i);
             if (!o) continue;
             UEObject obj(o);
-            if (obj.GetClassName() == "Class" && obj.GetName() == name)
+            if (obj.GetClassName() == "Class" && UENames::EqualsCI(obj.GetName(), name))
                 return UEClass(o);
         }
         return UEClass();
@@ -170,7 +170,7 @@ namespace UE
             void* o = ObjectArray::GetByIndex(i);
             if (!o) continue;
             UEObject obj(o);
-            if (obj.GetClassName() == "Function" && obj.GetName() == name)
+            if (obj.GetClassName() == "Function" && UENames::EqualsCI(obj.GetName(), name))
                 return UEFunction(o);
         }
         return UEFunction();
@@ -210,6 +210,7 @@ namespace UE
     std::vector<UEClass> GetAllClasses(const std::string& nameFilter)
     {
         std::vector<UEClass> out;
+        const std::string filter = UENames::ToLower(nameFilter);
         const int32 count = ObjectArray::Num();
         for (int32 i = 0; i < count; ++i)
         {
@@ -217,7 +218,7 @@ namespace UE
             if (!o) continue;
             UEObject obj(o);
             if (obj.GetClassName() != "Class") continue;
-            if (!nameFilter.empty() && obj.GetName().find(nameFilter) == std::string::npos) continue;
+            if (!filter.empty() && UENames::ToLower(obj.GetName()).find(filter) == std::string::npos) continue;
             out.push_back(UEClass(o));
         }
         return out;

@@ -691,7 +691,7 @@ bool UEObject::IsA(const std::string& className) const
     int guard = 0;
     while (c && guard++ < 64)
     {
-        if (c.GetName() == className)
+        if (UENames::EqualsCI(c.GetName(), className))
             return true;
         c = c.GetSuper();
     }
@@ -1042,7 +1042,7 @@ UEProperty UEStruct::FindMember(const std::string& name) const
     {
         for (const UEProperty& p : s.GetProperties())
         {
-            if (p.GetName() == name)
+            if (UENames::EqualsCI(p.GetName(), name))
                 return p;
         }
         s = s.GetSuper();
@@ -1058,7 +1058,7 @@ UEFunction UEStruct::FindFunctionInHierarchy(const std::string& name) const
     {
         for (const UEFunction& fn : s.GetFunctions())
         {
-            if (fn.GetName() == name)
+            if (UENames::EqualsCI(fn.GetName(), name))
                 return fn;
         }
         s = s.GetSuper();

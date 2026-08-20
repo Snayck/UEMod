@@ -1,6 +1,13 @@
 #include "graph.h"
+#include "nodelogic.h"
+#include <chrono>
 
 using namespace Editor;
+
+static int64_t NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 Pin* FindPin(Graph& g, ed::PinId id) {
     if (!id) return nullptr;
@@ -92,10 +99,28 @@ static void DrawTypeSelector(Graph& g, Pin& p) {
 
 void Editor::RenderNodes(Graph& g) {
     for (Node& n : g.Nodes) {
+        float errAlpha = 0.0f;
+        int64_t errNs = n.ErrorNs.load(std::memory_order_relaxed);
+        if (errNs > 0) {
+            double age = (double)(NowNs() - errNs) * 1e-9;
+            if (age >= 0.0 && age < 2.0)
+                errAlpha = (age < 1.0) ? 1.0f : (float)(2.0 - age);
+        }
+        if (errAlpha > 0.0f) {
+            ed::PushStyleColor(ed::StyleColor_NodeBorder,
+                ImColor(255, 48, 48, (int)(255.0f * errAlpha)).Value);
+            ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, 3.0f);
+        }
+
         ed::BeginNode(n.ID);
         ImGui::PushID(n.ID.AsPointer());
 
         ImGui::TextColored(n.Color, "%s", n.Name.c_str());
+        if (n.Name == "ScriptStart") {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Run"))
+                Exec::RunScriptNode(g, n);
+        }
         ImGui::Dummy(ImVec2(0, 4));
 
         for (Pin& p : n.Outputs)
@@ -147,6 +172,13 @@ void Editor::RenderNodes(Graph& g) {
 
         ImGui::PopID();
         ed::EndNode();
+
+        if (errAlpha > 0.0f) {
+            ed::PopStyleVar();
+            ed::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", n.Error);
+        }
     }
     for (Link& l : g.Links)
         ed::Link(l.ID, l.StartPinID, l.EndPinID);

@@ -1,6 +1,8 @@
 #pragma once
 #include "imgui.h"
 #include "imgui_node_editor.h"
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <list>
@@ -50,6 +52,11 @@ struct Node {
     std::vector<Pin>    Outputs;
     ImColor             Color;
     // std::unique_ptr<NodeLogic> Logic;
+
+    // error feedback: written from executor threads, read by the renderer
+    char                Error[96] = {};
+    std::atomic<int64_t> ErrorNs{ 0 };
+    std::atomic<int64_t> LastLogNs{ 0 };   // console-log throttle
 
     Node(int id, const char* name, ImColor color = ImColor(255, 255, 255))
         : ID(id), Name(name), Color(color) {}

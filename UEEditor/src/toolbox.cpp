@@ -11,7 +11,7 @@ static void Entry(const char* label, Node* (*spawn)(Graph&), Graph& g) {
 
 void Toolbox::Render(Editor::Graph& g) {
     if (ImGui::CollapsingHeader("Events", ImGuiTreeNodeFlags_DefaultOpen)) {
-        Entry("On Initialize", SpawnInitScriptNode, g);
+        Entry("Script Start", SpawnScriptStartNode, g);
         Entry("On Key Press",  OnKeyPress, g);
         Entry("On Frame Render", OnFrameRender, g);
         Entry("Pre Hook",  PreHook, g);

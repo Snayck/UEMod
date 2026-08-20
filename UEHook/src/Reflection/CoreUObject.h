@@ -21,6 +21,28 @@ class UEFunction;
 class UEProperty;
 class UEEnum;
 
+// case-insensitive name compares (ASCII)
+namespace UENames
+{
+    inline std::string ToLower(std::string s)
+    {
+        for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+        return s;
+    }
+    inline bool EqualsCI(const std::string& a, const std::string& b)
+    {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+        {
+            char x = a[i], y = b[i];
+            if (x >= 'A' && x <= 'Z') x += 32;
+            if (y >= 'A' && y <= 'Z') y += 32;
+            if (x != y) return false;
+        }
+        return true;
+    }
+}
+
 class UEObject
 {
 protected:
