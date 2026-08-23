@@ -9,6 +9,8 @@
 #include "customnodes.h"
 #include "serialize.h"
 #include "calllogger.h"
+#include "classcache.h"
+#include "objectexplorer.h"
 #include "app.h"
 #include <d3d11.h>
 #include <tchar.h>
@@ -27,6 +29,54 @@ void RequestAppExit() { g_ExitRequested.store(true); }
 #ifdef UEEDITOR_WITH_BACKEND
 extern "C" void UEEditorRequestUnload();   // dllmain.cpp
 #endif
+
+static HHOOK g_KbHook = nullptr;
+static std::mutex g_KeyMutex;
+static std::vector<std::string> g_KeyQueue;
+
+static const char* VkToKeyName(UINT vk, char* buf, size_t bufSize) {
+    if (vk >= 'A' && vk <= 'Z') { snprintf(buf, bufSize, "%c", (char)vk); return buf; }
+    if (vk >= '0' && vk <= '9') { snprintf(buf, bufSize, "%c", (char)vk); return buf; }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { snprintf(buf, bufSize, "Num%d", vk - VK_NUMPAD0); return buf; }
+    if (vk >= VK_F1 && vk <= VK_F12) { snprintf(buf, bufSize, "F%d", vk - VK_F1 + 1); return buf; }
+    switch (vk) {
+    case VK_SPACE: return "Space";       case VK_RETURN:  return "Enter";
+    case VK_ESCAPE: return "Escape";     case VK_TAB:     return "Tab";
+    case VK_LSHIFT: case VK_RSHIFT: case VK_SHIFT: return "Shift";
+    case VK_LCONTROL: case VK_RCONTROL: case VK_CONTROL: return "Ctrl";
+    case VK_LMENU: case VK_RMENU: case VK_MENU: return "Alt";
+    case VK_BACK: return "Backspace";    case VK_INSERT:  return "Insert";
+    case VK_DELETE: return "Delete";     case VK_HOME:    return "Home";
+    case VK_END: return "End";           case VK_PRIOR:   return "PageUp";
+    case VK_NEXT: return "PageDown";     case VK_LEFT:    return "Left";
+    case VK_RIGHT: return "Right";       case VK_UP:      return "Up";
+    case VK_DOWN: return "Down";
+    }
+    snprintf(buf, bufSize, "Key%d", (int)vk);
+    return buf;
+}
+
+static LRESULT CALLBACK KbHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        KBDLLHOOKSTRUCT* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+        static bool held[256] = {};
+        UINT vk = kb->vkCode;
+        if (!(kb->flags & LLKHF_INJECTED) && vk < 256) {
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                if (!held[vk]) {
+                    held[vk] = true;
+                    char name[16];
+                    VkToKeyName(vk, name, sizeof name);
+                    std::lock_guard<std::mutex> lk(g_KeyMutex);
+                    g_KeyQueue.push_back(name);
+                }
+            } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                held[vk] = false;
+            }
+        }
+    }
+    return CallNextHookEx(g_KbHook, nCode, wParam, lParam);
+}
 
 // Data
 static ID3D11Device*            g_pd3dDevice = nullptr;
@@ -297,6 +347,7 @@ static void RenderCustomEditor() {
         Editor::RenderNodes(def->Body);
         Editor::PollInput(def->Body);
         ed::End();
+        Editor::RenderDeferredCombos(def->Body);
         ImGui::EndChild();
     }
     ImGui::End();
@@ -409,6 +460,7 @@ int RunApp()
 
     Exec::InitBackend();   // no-op in the standalone build
     CallLogger::Init();
+    g_KbHook = SetWindowsHookExW(WH_KEYBOARD_LL, KbHookProc, nullptr, 0);
 
     bool done = false;
     while (!done)
@@ -507,6 +559,7 @@ int RunApp()
                             Editor::RenderNodes(it->Graph);
                             Editor::PollInput(it->Graph);
                             ed::End();
+                            Editor::RenderDeferredCombos(it->Graph);
                             ImGui::EndChild();
                             ImGui::EndTabItem();
                         } else if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(1)) {
@@ -576,10 +629,28 @@ int RunApp()
                 for (ScriptTab& tab : g_Tabs)
                     if (tab.Graph.Playing.load())
                         Exec::TickFrame(tab.Graph);
+
+                std::vector<std::string> keys;
+                {
+                    std::lock_guard<std::mutex> lk(g_KeyMutex);
+                    keys.swap(g_KeyQueue);
+                }
+                // suppress only while actually typing in an InputText
+                // (WantCaptureKeyboard is permanently true with keyboard nav on)
+                if (!keys.empty() && !ImGui::GetIO().WantTextInput)
+                    for (const std::string& k : keys)
+                        for (ScriptTab& tab : g_Tabs)
+                            if (tab.Graph.Playing.load())
+                                Exec::FireKeyPress(tab.Graph, k.c_str());
             }
             RenderCustomNodesPanel();
 
             CallLogger::Render();
+            ObjectExplorer::Render();
+            if (!g_Tabs.empty()) {
+                ObjectExplorer::FlushSpawns(g_Active->Graph);
+                CallLogger::FlushSpawns(g_Active->Graph);
+            }
             RenderCustomEditor();
             RenderCreateCustomPopup();
             RenderLoadPopup();
@@ -600,6 +671,7 @@ int RunApp()
         g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
     }
 
+    if (g_KbHook) { UnhookWindowsHookEx(g_KbHook); g_KbHook = nullptr; }
     Exec::WaitForInit();   // async init must not outlive the editor
     for (ScriptTab& tab : g_Tabs)
         StopTabHooks(tab);

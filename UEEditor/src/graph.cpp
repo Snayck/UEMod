@@ -1,6 +1,8 @@
 #include "graph.h"
 #include "nodelogic.h"
+#include "classcache.h"
 #include <chrono>
+#include <unordered_map>
 
 using namespace Editor;
 
@@ -9,6 +11,127 @@ static double SteadyNowSec() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 static double NanosToSec(int64_t ns) { return (double)ns * 1e-9; }
+
+Pin* FindPin(Graph& g, ed::PinId id);
+
+// ---- target-class resolution + pin dropdowns ---------------------------------
+
+static std::unordered_map<uint32_t, const ClassInfo*> g_PinClassCache;
+
+static const ClassInfo* ResolveTargetClass(Graph& g, Node& n) {
+    Pin* target = nullptr;
+    for (Pin& p : n.Inputs)
+        if (p.Name == "Target") { target = &p; break; }
+    if (!target) return nullptr;
+
+    for (const Link& l : g.Links) {
+        if (l.EndPinID != target->ID) continue;
+        Pin* src = FindPin(g, l.StartPinID);
+        if (!src || !src->Node) break;
+        uint32_t key = (uint32_t)src->ID.Get();
+        auto it = g_PinClassCache.find(key);
+        if (it != g_PinClassCache.end()) return it->second;
+
+        const ClassInfo* ci = nullptr;
+        const std::string& t = src->Node->Type;
+        if (t == "GetWorld") ci = ClassCache::Find("World");
+        else ci = ClassCache::Get(Exec::ProbeInputClass(g, n, "Target"));
+        if (ci) g_PinClassCache[key] = ci;
+        return ci;
+    }
+    return ClassCache::Get(Exec::ProbeInputClass(g, n, "Target"));
+}
+
+static char g_ClassSearch[128] = "";
+
+// combos can't live inside node windows (popups misplace); queue a request and
+// open the popup at canvas level after ed::End()
+struct ComboReq {
+    Graph*  GraphPtr;
+    ed::PinId PinId;
+    bool    Field;
+    bool    Opened = false;
+};
+static std::vector<ComboReq> g_ComboReqs;
+
+static void RenderComboList(Graph& g, Node& n, Pin& p, bool field) {
+    const ClassInfo* ci = ResolveTargetClass(g, n);
+    if (!ci) {
+        ImGui::TextDisabled("target class unknown - type a class:");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##cs", "class name", g_ClassSearch, sizeof g_ClassSearch);
+        if (g_ClassSearch[0])
+            ci = ClassCache::Find(g_ClassSearch);
+    }
+    if (!ci) return;
+    for (const ClassLevel& lvl : ci->Levels) {
+        if (field && lvl.Fields.empty()) continue;
+        if (!field && lvl.Functions.empty()) continue;
+        ImGui::SeparatorText(lvl.ClassName.c_str());
+        if (field) {
+            for (const FieldDesc& f : lvl.Fields) {
+                bool sel = p.DefaultValue == f.Name;
+                if (ImGui::Selectable((f.Name + "##" + lvl.ClassName).c_str(), sel)) {
+                    p.DefaultValue = f.Name;
+                    g.Dirty = true;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        } else {
+            for (const FuncDesc& f : lvl.Functions) {
+                bool sel = p.DefaultValue == f.Name || p.DefaultValue == f.FullName;
+                if (ImGui::Selectable((f.Name + "##" + lvl.ClassName).c_str(), sel)) {
+                    p.DefaultValue = f.FullName;
+                    g.Dirty = true;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+    }
+}
+
+static void DrawComboButton(Graph& g, Node& n, Pin& p, bool field) {
+    std::string label = p.DefaultValue.empty()
+        ? (field ? "<field>" : "<function>") : p.DefaultValue;
+    if (ImGui::SmallButton((label + "##cmb").c_str())) {
+        ComboReq r;
+        r.GraphPtr = &g;
+        r.PinId = p.ID;
+        r.Field = field;
+        g_ComboReqs.push_back(r);
+    }
+}
+
+void Editor::RenderDeferredCombos(Graph& g) {
+    for (auto it = g_ComboReqs.begin(); it != g_ComboReqs.end(); ) {
+        if (it->GraphPtr != &g) { ++it; continue; }
+        Pin* pin = FindPin(g, it->PinId);
+        Node* node = pin ? pin->Node : nullptr;
+        if (!node) { it = g_ComboReqs.erase(it); continue; }
+
+        ImGui::PushID((int)it->PinId.Get());
+        if (!it->Opened) {
+            ImGui::OpenPopup("##dd");   // latches to current mouse pos
+            it->Opened = true;
+        }
+        if (ImGui::BeginPopup("##dd")) {
+            RenderComboList(g, *node, *pin, it->Field);
+            ImGui::EndPopup();
+            ++it;
+        } else {
+            it = g_ComboReqs.erase(it);
+        }
+        ImGui::PopID();
+    }
+}
+
+static bool IsFieldComboPin(Node& n, Pin& p) {
+    return p.Name == "Field" && (n.Type == "GetValue" || n.Type == "SetValue");
+}
+
+static bool IsFunctionComboPin(Node& n, Pin& p) {
+    return p.Name == "Function" && n.Type == "CallFunction";
+}
 
 Pin* FindPin(Graph& g, ed::PinId id) {
     if (!id) return nullptr;
@@ -198,6 +321,16 @@ void Editor::RenderNodes(Graph& g) {
             if (n.Type == "CustomOutput" && p.Type != PinType::Flow) {
                 ImGui::SameLine();
                 DrawCustomIOPin(g, p);
+            } else if (!IsPinConnected(g, p.ID) && IsFieldComboPin(n, p)) {
+                ImGui::SameLine();
+                ImGui::PushID(p.ID.AsPointer());
+                DrawComboButton(g, n, p, true);
+                ImGui::PopID();
+            } else if (!IsPinConnected(g, p.ID) && IsFunctionComboPin(n, p)) {
+                ImGui::SameLine();
+                ImGui::PushID(p.ID.AsPointer());
+                DrawComboButton(g, n, p, false);
+                ImGui::PopID();
             } else if (IsLiteralType(p.Type) && !IsPinConnected(g, p.ID)) {
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(80);
@@ -270,6 +403,7 @@ void Editor::PollInput(Graph& g) {
                 if (IsValidConnection(g, startId, endId)) {
                     if (ed::AcceptNewItem()) {
                         g.Links.push_back(Link(g.NextId++, startId, endId));
+                        g_PinClassCache.clear();
                         g.Dirty = true;
                     }
                 } else {

@@ -40,6 +40,8 @@ set(COMMON_SOURCES
     src/customnodes.cpp
     src/serialize.cpp
     src/calllogger.cpp
+    src/classcache.cpp
+    src/objectexplorer.cpp
     ${IMGUI_SOURCES}
     ${NE_SOURCES}
 )

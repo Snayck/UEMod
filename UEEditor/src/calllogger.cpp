@@ -1,5 +1,18 @@
 #include "calllogger.h"
 #include "imgui.h"
+#include "nodes.h"
+
+namespace CallLogger {
+    struct SpawnReq { bool Post; std::string Function; };
+    static std::vector<SpawnReq> g_SpawnReqs;
+
+    void FlushSpawns(Editor::Graph& g) {
+        for (const SpawnReq& r : g_SpawnReqs)
+            r.Post ? Nodes::PostHook(g, r.Function) : Nodes::PreHook(g, r.Function);
+        if (!g_SpawnReqs.empty()) g.Dirty = true;
+        g_SpawnReqs.clear();
+    }
+}
 
 #ifndef UEEDITOR_WITH_BACKEND
 
@@ -137,6 +150,7 @@ void SerializeValues(Entry& e) {
 
 struct Group {
     std::string Label;
+    std::string FullName;
     std::vector<uint64_t> Seqs;
 };
 
@@ -237,6 +251,7 @@ void Render() {
             auto git = groupIdx.find(key);
             if (git == groupIdx.end()) {
                 Group grp;
+                grp.FullName = it->FuncFull;
                 grp.Label = it->FuncFull.rfind("Function ", 0) == 0
                     ? it->FuncFull.substr(9) : it->FuncFull;
                 groups.push_back(std::move(grp));
@@ -249,7 +264,17 @@ void Render() {
     ImGui::BeginChild("##log", ImVec2(0, 0), false);
     for (Group& grp : groups) {
         ImGui::PushID(grp.Label.c_str());
-        if (ImGui::TreeNode(grp.Label.c_str(), "%s (%d)", grp.Label.c_str(), (int)grp.Seqs.size())) {
+        bool expanded = ImGui::TreeNode(grp.Label.c_str(), "%s (%d)", grp.Label.c_str(), (int)grp.Seqs.size());
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1))
+            ImGui::OpenPopup("grpctx");
+        if (ImGui::BeginPopup("grpctx")) {
+            if (ImGui::MenuItem("Add PreHook"))
+                g_SpawnReqs.push_back({ false, grp.FullName });
+            if (ImGui::MenuItem("Add PostHook"))
+                g_SpawnReqs.push_back({ true, grp.FullName });
+            ImGui::EndPopup();
+        }
+        if (expanded) {
             std::lock_guard<std::mutex> lk(g_Mutex);
             for (auto sit = grp.Seqs.rbegin(); sit != grp.Seqs.rend(); ++sit) {
                 auto eit = g_BySeq.find(*sit);

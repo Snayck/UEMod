@@ -127,6 +127,7 @@ struct Graph {
 	void RenderNodes(Graph& g);
 	void PollInput(Graph& g);
 	void RemoveLinksTouchingNode(Graph& g, const Node& node);
+	void RenderDeferredCombos(Graph& g);   // call after ed::End()
 
 	inline ImColor PinColor(PinType t) {
 		switch (t) {

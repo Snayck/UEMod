@@ -10,9 +10,12 @@ namespace Exec {
     bool BackendReady() { return false; }
     const char* BackendStatus() { return "standalone (no backend)"; }
     void RunScriptNode(Editor::Graph&, Editor::Node&) {}
+    void FireKeyPress(Editor::Graph&, const char*) {}
     bool StartHook(Editor::Graph&, Editor::Node&) { return false; }
     void StopHook(Editor::Node&) {}
     void TickFrame(Editor::Graph&) {}
+    void* ProbeInputClass(Editor::Graph&, Editor::Node&, const char*) { return nullptr; }
+    bool ApplyStringToField(void*, const std::string&, const std::string&) { return false; }
 }
 
 #else
@@ -713,6 +716,85 @@ void TickFrame(Graph& g) {
     Ctx ctx(g);   // frame-render + draw run on the UI thread (reads only; writes here are unsafe)
     for (Node& n : g.Nodes)
         if (n.Type == "OnFrameRender") ctx.RunNext(n);
+}
+
+void FireKeyPress(Graph& g, const char* key) {
+    if (!UE::IsInitialized()) return;
+    std::string k = key;
+    UE::DispatchSync([&] {
+        Ctx ctx(g);
+        for (Node& n : g.Nodes)
+            if (n.Type == "OnKeyPress") {
+                ctx.SetOut(n, "Key", EValue(UEValue::MakeString(k)));
+                ctx.RunNext(n);
+            }
+    }, 1000);
+}
+
+void* ProbeInputClass(Graph& g, Node& n, const char* pinName) {
+    if (!UE::IsInitialized()) return nullptr;
+    Ctx ctx(g);
+    Pin* p = InPin(n, pinName);
+    if (!p) return nullptr;
+    EValue e = ctx.Pull(p);
+    if (e.v.Kind != UEValueKind::Object || !e.v.Ptr) return nullptr;
+    UEClass c = UEObject(e.v.Ptr).GetClass();
+    return c ? c.GetAddress() : nullptr;
+}
+
+bool ApplyStringToField(void* obj, const std::string& path, const std::string& text) {
+    UEObject root(obj);
+    if (!root || path.empty()) return false;
+
+    std::vector<std::string> segs;
+    std::string cur;
+    for (char c : path) {
+        if (c == '.') { segs.push_back(cur); cur.clear(); }
+        else cur += c;
+    }
+    segs.push_back(cur);
+    if (segs.empty() || segs[0].empty()) return false;
+
+    UEValue v;
+    UEStructRef ref;
+    UEProperty leaf = root.FindProp(segs[0]);
+    if (!leaf) return false;
+    if (segs.size() == 1) {
+        UEValue val = UEValue::MakeString(text);
+        std::string tn = leaf.GetTypeName();
+        if (tn == "FloatProperty" || tn == "DoubleProperty") val = UEValue::MakeFloat(atof(text.c_str()));
+        else if (tn == "BoolProperty")                        val = UEValue::MakeBool(text == "true" || text == "1");
+        else if (tn.find("IntProperty") != std::string::npos || tn == "ByteProperty") val = UEValue::MakeInt(atoll(text.c_str()));
+        else if (tn == "NameProperty")                        val = UEValue::MakeName(text);
+        bool ok = false;
+        UE::DispatchSync([&] { ok = root.SetValue(segs[0], val); });
+        return ok;
+    }
+
+    v = root.GetValue(segs[0]);
+    if (v.Kind != UEValueKind::Struct) return false;
+    ref = UEStructRef(v);
+    for (size_t i = 1; i + 1 < segs.size(); ++i) {
+        if (!ref) return false;
+        v = ref.GetValue(segs[i]);
+        if (v.Kind != UEValueKind::Struct) return false;
+        ref = UEStructRef(v);
+    }
+    if (!ref) return false;
+    const std::string& leafName = segs.back();
+    UEProperty lp = ref.Find(leafName);
+    if (!lp) return false;
+
+    UEValue val = UEValue::MakeString(text);
+    std::string tn = lp.GetTypeName();
+    if (tn == "FloatProperty" || tn == "DoubleProperty") val = UEValue::MakeFloat(atof(text.c_str()));
+    else if (tn == "BoolProperty")                        val = UEValue::MakeBool(text == "true" || text == "1");
+    else if (tn.find("IntProperty") != std::string::npos || tn == "ByteProperty") val = UEValue::MakeInt(atoll(text.c_str()));
+    else if (tn == "NameProperty")                        val = UEValue::MakeName(text);
+    bool ok = false;
+    std::string name = leafName;
+    UE::DispatchSync([&] { ok = ref.SetValue(name, val); });
+    return ok;
 }
 
 } // namespace Exec

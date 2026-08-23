@@ -72,6 +72,11 @@ namespace Nodes {
         Out(g, n, "Params", PinType::Any);
         BuildNode(n); return n;
     }
+    inline Node* PreHook(Graph& g, const std::string& function) {
+        Node* n = PreHook(g);
+        for (Pin& p : n->Inputs) if (p.Name == "Function") p.DefaultValue = function;
+        return n;
+    }
 
     inline Node* PostHook(Graph& g) {
         Node* n = Begin(g, "PostHook", Col::Event);
@@ -81,6 +86,11 @@ namespace Nodes {
         Out(g, n, "Params", PinType::Any);
         Out(g, n, "Return", PinType::Any);
         BuildNode(n); return n;
+    }
+    inline Node* PostHook(Graph& g, const std::string& function) {
+        Node* n = PostHook(g);
+        for (Pin& p : n->Inputs) if (p.Name == "Function") p.DefaultValue = function;
+        return n;
     }
 
     inline Node* GetParam(Graph& g) {
@@ -172,6 +182,11 @@ namespace Nodes {
         Out(g, n, "Value", PinType::Any);
         BuildNode(n); return n;
     }
+    inline Node* GetValue(Graph& g, const std::string& field) {
+        Node* n = GetValue(g);
+        for (Pin& p : n->Inputs) if (p.Name == "Field") p.DefaultValue = field;
+        return n;
+    }
 
     inline Node* SetValue(Graph& g) {
         Node* n = Begin(g, "SetValue", Col::Object);
@@ -181,6 +196,11 @@ namespace Nodes {
         In (g, n, "Value", PinType::Any);
         Out(g, n, "", PinType::Flow);
         BuildNode(n); return n;
+    }
+    inline Node* SetValue(Graph& g, const std::string& field) {
+        Node* n = SetValue(g);
+        for (Pin& p : n->Inputs) if (p.Name == "Field") p.DefaultValue = field;
+        return n;
     }
 
     inline Node* CallFunction(Graph& g) {
