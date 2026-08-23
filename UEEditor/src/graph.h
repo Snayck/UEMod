@@ -3,6 +3,8 @@
 #include "imgui_node_editor.h"
 #include <atomic>
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <list>
@@ -21,7 +23,7 @@ enum class PinType {
     String,
     Name,     // FName
     Object,   // UObject*
-    Struct,   // in-place struct]
+    Struct,   // in-place struct
     Array,    // TArray
     Any,      // any UEValue, runtime-typed
     // Set, Map
@@ -38,28 +40,40 @@ struct Pin {
     PinType		Type;
     PinKind		Kind = PinKind::Input;
 	std::string DefaultValue;
-	bool        Selectable = false;
-	bool        SelectorOpen = false;
+    bool        Selectable = false;
+    bool        SelectorOpen = false;
 
     Pin(int id, const char* name, PinType type)
         : ID(id), Name(name), Type(type) {}
 };
 
+// session variable value; lives in Graph so it survives between runs
+struct ScriptVar {
+    PinType     Type = PinType::Any;
+    std::string Str;
+    double      Num = 0.0;
+    bool        Bool = false;
+    void*       Obj = nullptr;
+};
+
 struct Node {
     ed::NodeId          ID;
-    std::string         Name;
+    std::string         Type;   // logic key ("ForEach", "GetVar", custom node name)
+    std::string         Name;   // display label
     std::vector<Pin>    Inputs;
     std::vector<Pin>    Outputs;
     ImColor             Color;
-    // std::unique_ptr<NodeLogic> Logic;
+    std::string         Meta;   // extra data (variable name for Get/SetVar)
+    ImVec2              Pos = ImVec2(0, 0);
+    int                 HookHandle = 0;   // live Pre/PostHook registration (>0 = on)
 
     // error feedback: written from executor threads, read by the renderer
     char                Error[96] = {};
     std::atomic<int64_t> ErrorNs{ 0 };
     std::atomic<int64_t> LastLogNs{ 0 };   // console-log throttle
 
-    Node(int id, const char* name, ImColor color = ImColor(255, 255, 255))
-        : ID(id), Name(name), Color(color) {}
+    Node(int id, const char* type, ImColor color = ImColor(255, 255, 255))
+        : ID(id), Type(type), Name(type), Color(color) {}
 };
 
 struct Link {
@@ -75,12 +89,44 @@ struct Graph {
     std::list<Node>     Nodes;
     std::vector<Link>   Links;
     int                 NextId = 1;
+    bool                Dirty = false;
+    std::atomic<bool>   Playing{ true };   // gates hook callbacks + frame ticks
+
+    mutable std::mutex                VarsMutex;
+    std::map<std::string, ScriptVar>  Variables;
+
+    Graph() = default;
+    Graph(const Graph&) = delete;
+    Graph& operator=(const Graph&) = delete;
+    // move: nodes live in a list (stable, never element-moved) so atomics are safe
+    Graph(Graph&& o) noexcept
+        : Nodes(std::move(o.Nodes)), Links(std::move(o.Links)),
+          NextId(o.NextId), Dirty(o.Dirty), Playing(o.Playing.load()),
+          Variables(std::move(o.Variables)) {}
+    Graph& operator=(Graph&& o) noexcept {
+        if (this != &o) {
+            Nodes = std::move(o.Nodes);
+            Links = std::move(o.Links);
+            NextId = o.NextId;
+            Dirty = o.Dirty;
+            Playing.store(o.Playing.load());
+            std::lock_guard<std::mutex> lk1(VarsMutex), lk2(o.VarsMutex);
+            Variables = std::move(o.Variables);
+        }
+        return *this;
+    }
 
     int GetNextId() { return NextId++; }
+
+    Node* FindNodeByType(const char* type) {
+        for (Node& n : Nodes) if (n.Type == type) return &n;
+        return nullptr;
+    }
 };
 
 	void RenderNodes(Graph& g);
 	void PollInput(Graph& g);
+	void RemoveLinksTouchingNode(Graph& g, const Node& node);
 
 	inline ImColor PinColor(PinType t) {
 		switch (t) {

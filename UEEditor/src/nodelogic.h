@@ -7,6 +7,7 @@ namespace Exec {
     bool BackendReady();
     const char* BackendStatus();
     void RunScriptNode(Editor::Graph& g, Editor::Node& n); // run a ScriptStart chain
-    void RunGraph(Editor::Graph& g);   // register PreHook/PostHook nodes
+    bool StartHook(Editor::Graph& g, Editor::Node& n);     // register this Pre/PostHook node
+    void StopHook(Editor::Node& n);                        // unregister
     void TickFrame(Editor::Graph& g);  // fire OnFrameRender chains (per frame)
 }

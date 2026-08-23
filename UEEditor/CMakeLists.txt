@@ -37,6 +37,8 @@ set(COMMON_SOURCES
     src/graph.cpp
     src/nodes.cpp
     src/nodelogic.cpp
+    src/customnodes.cpp
+    src/serialize.cpp
     ${IMGUI_SOURCES}
     ${NE_SOURCES}
 )

@@ -1,10 +1,8 @@
 #pragma once
-#include "imgui.h"
-#include "imgui_node_editor.h"
 #include "graph.h"
 #include <string>
-#include <vector>
 
+// limited=true hides events (used inside the custom-node body editor)
 namespace Toolbox {
-    void Render(Editor::Graph& g);
+    void Render(Editor::Graph& g, bool limited = false);
 }

@@ -30,8 +30,9 @@ namespace Nodes {
         for (Pin& p : node->Outputs) { p.Node = node; p.Kind = PinKind::Output; }
     }
 
-    inline Node* Begin(Graph& g, const char* name, ImColor color) {
-        g.Nodes.emplace_back(g.GetNextId(), name, color);
+    inline Node* Begin(Graph& g, const char* type, ImColor color, const char* displayName = nullptr) {
+        g.Nodes.emplace_back(g.GetNextId(), type, color);
+        g.Nodes.back().Name = displayName ? displayName : type;
         return &g.Nodes.back();
     }
     inline Pin& In(Graph& g, Node* n, const char* name, PinType t) {
@@ -327,4 +328,34 @@ namespace Nodes {
         Out(g, n, "Element", PinType::Any);
         BuildNode(n); return n;
     }
+
+    // ---- variables ----
+
+    inline Node* GetVar(Graph& g, const std::string& varName, PinType type) {
+        Node* n = Begin(g, "GetVar", Col::Object, ("Get " + varName).c_str());
+        n->Meta = varName;
+        Out(g, n, varName.c_str(), type);
+        BuildNode(n); return n;
+    }
+    inline Node* SetVar(Graph& g, const std::string& varName, PinType type) {
+        Node* n = Begin(g, "SetVar", Col::Object, ("Set " + varName).c_str());
+        n->Meta = varName;
+        In (g, n, "", PinType::Flow);
+        In (g, n, "Value", type);
+        Out(g, n, "", PinType::Flow);
+        BuildNode(n); return n;
+    }
+
+    // ---- custom nodes ----
+
+    // interface nodes inside a custom node's body
+    inline Node* SpawnCustomIO(Graph& g, const char* ioType) {
+        Node* n = Begin(g, ioType, Col::Event);
+        if (strcmp(ioType, "CustomInput") == 0)
+            Out(g, n, "", PinType::Flow);
+        else
+            In (g, n, "", PinType::Flow);
+        BuildNode(n); return n;
+    }
 }
+

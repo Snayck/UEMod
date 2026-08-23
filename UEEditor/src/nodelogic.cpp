@@ -8,7 +8,8 @@ namespace Exec {
     bool BackendReady() { return false; }
     const char* BackendStatus() { return "standalone (no backend)"; }
     void RunScriptNode(Editor::Graph&, Editor::Node&) {}
-    void RunGraph(Editor::Graph&) {}
+    bool StartHook(Editor::Graph&, Editor::Node&) { return false; }
+    void StopHook(Editor::Node&) {}
     void TickFrame(Editor::Graph&) {}
 }
 
@@ -16,6 +17,7 @@ namespace Exec {
 // -------- injected build --------
 #include "imgui.h"
 #include "UEHook.h"
+#include "customnodes.h"
 #include <chrono>
 #include <string>
 #include <vector>
@@ -29,6 +31,8 @@ using Editor::Pin;
 using Editor::Link;
 using Editor::PinType;
 using Editor::PinKind;
+using Editor::CustomNodeDef;
+using Editor::ScriptVar;
 
 namespace {
 
@@ -110,7 +114,11 @@ struct Ctx {
     Graph& g;
     std::unordered_map<const void*, EValue>  outCache;   // impure output pin -> value
     std::unordered_map<const void*, UEParams> paramsCache; // hook Params pin -> frame
-    explicit Ctx(Graph& gg) : g(gg) {}
+    Graph* varsG = nullptr;             // variable store (outer script when nested)
+    std::vector<EValue>* returnSlot = nullptr; // custom node body -> instance results
+    bool returned = false;
+    explicit Ctx(Graph& gg, Graph* varSource = nullptr)
+        : g(gg), varsG(varSource ? varSource : &gg) {}
 
     Pin* SourcePin(Pin& in) {
         for (Link& l : g.Links) if (l.EndPinID == in.ID) return FindPinById(g, l.StartPinID);
@@ -133,7 +141,7 @@ struct Ctx {
             auto it = outCache.find(src);
             if (it != outCache.end()) return it->second;
             if (src->Node) {
-                NodeLogic* logic = LogicFor(src->Node->Name);
+                NodeLogic* logic = LogicFor(src->Node->Type);
                 if (logic->ImpureOutputs()) {
                     Fail(*src->Node, "'" + src->Name + "' read before this node executed. " +
                         "Its exec input must be wired into the chain " +
@@ -150,7 +158,7 @@ struct Ctx {
     void RunFrom(Pin& execOut) {
         for (Link& l : g.Links) if (l.StartPinID == execOut.ID) {
             if (Pin* dst = FindPinById(g, l.EndPinID))
-                if (dst->Node) LogicFor(dst->Node->Name)->Execute(*this, *dst->Node);
+                if (dst->Node) LogicFor(dst->Node->Type)->Execute(*this, *dst->Node);
         }
     }
     void RunNamed(Node& n, const char* outName) { if (Pin* p = OutPin(n, outName)) RunFrom(*p); }
@@ -287,6 +295,61 @@ struct LiteralLogic : NodeLogic {
     EValue Evaluate(Ctx& c, Node& n, Pin& out) override { return c.Literal(out); }
 };
 
+// ---- variables ----
+
+static EValue VarToValue(const ScriptVar& v) {
+    switch (v.Type) {
+    case PinType::Bool:   return EValue(UEValue::MakeBool(v.Bool));
+    case PinType::Int:    return EValue(UEValue::MakeInt((int64_t)v.Num));
+    case PinType::Float:  return EValue(UEValue::MakeFloat(v.Num));
+    case PinType::Name:   return EValue(UEValue::MakeName(v.Str));
+    case PinType::Object: return EValue(UEValue::MakeObject(v.Obj));
+    case PinType::String: return EValue(UEValue::MakeString(v.Str));
+    default: // Any: whatever was last written
+        if (v.Obj)          return EValue(UEValue::MakeObject(v.Obj));
+        if (!v.Str.empty()) return EValue(UEValue::MakeString(v.Str));
+        return EValue(UEValue::MakeFloat(v.Num));
+    }
+}
+
+struct GetVarLogic : NodeLogic {
+    EValue Evaluate(Ctx& c, Node& n, Pin&) override {
+        ScriptVar v;
+        {
+            std::lock_guard<std::mutex> lock(c.varsG->VarsMutex);
+            auto it = c.varsG->Variables.find(n.Meta);
+            if (it == c.varsG->Variables.end()) {
+                c.Fail(n, "no variable '" + n.Meta + "'");
+                return {};
+            }
+            v = it->second;
+        }
+        return VarToValue(v);
+    }
+};
+struct SetVarLogic : NodeLogic {
+    void Execute(Ctx& c, Node& n) override {
+        EValue e = c.Pull(n, "Value");
+        std::lock_guard<std::mutex> lock(c.varsG->VarsMutex);
+        ScriptVar& v = c.varsG->Variables[n.Meta];
+        switch (v.Type) {
+        case PinType::Bool:   v.Bool = e.v.AsBool(); break;
+        case PinType::Int:    v.Num = (double)e.v.AsInt(); break;
+        case PinType::Float:  v.Num = e.v.AsFloat(); break;
+        case PinType::Name:
+        case PinType::String: v.Str = e.v.AsString(); break;
+        case PinType::Object: v.Obj = e.v.AsObject(); break;
+        default: // Any
+            v.Obj = (e.v.Kind == UEValueKind::Object) ? e.v.Ptr : nullptr;
+            v.Str = (e.v.Kind == UEValueKind::String || e.v.Kind == UEValueKind::Name) ? e.v.Str : "";
+            v.Num = (e.v.Kind == UEValueKind::Int) ? (double)e.v.Int
+                  : (e.v.Kind == UEValueKind::Float) ? e.v.Float : 0.0;
+            break;
+        }
+        c.RunNext(n);
+    }
+};
+
 // math family, dispatched on node name
 struct BinaryMathLogic : NodeLogic {
     EValue Evaluate(Ctx& c, Node& n, Pin&) override {
@@ -325,6 +388,63 @@ struct GetParamLogic : NodeLogic {
         UEValue v = it->second.GetValue(name);
         if (v.IsNone()) c.Fail(n, "param '" + name + "' not found on this function");
         return EValue(v);
+    }
+};
+
+// ---- custom node execution ----
+
+struct CustomOutputLogic : NodeLogic {
+    void Execute(Ctx& c, Node& n) override {
+        if (c.returnSlot)
+            for (Pin& p : n.Inputs) {
+                if (p.Type == PinType::Flow) continue;
+                c.returnSlot->push_back(c.Pull(&p));
+            }
+        c.returned = true;   // terminal node
+    }
+};
+
+struct CustomInstanceLogic : NodeLogic {
+    bool ImpureOutputs() const override { return true; }
+    void Execute(Ctx& c, Node& n) override {
+        CustomNodeDef* def = CustomNodes::Find(n.Type);
+        Node* inNode  = def ? def->Body.FindNodeByType("CustomInput")  : nullptr;
+        Node* outNode = def ? def->Body.FindNodeByType("CustomOutput") : nullptr;
+        if (!def || !inNode || !outNode) {
+            c.Fail(n, "custom node definition missing or broken");
+            c.RunNext(n);
+            return;
+        }
+        static thread_local int depth = 0;
+        if (depth >= 16) {
+            c.Fail(n, "custom node recursion too deep");
+            c.RunNext(n);
+            return;
+        }
+
+        Ctx bc(def->Body, &c.g);   // body sees the outer script's variables
+        std::vector<EValue> results;
+        bc.returnSlot = &results;
+
+        for (Pin& op : inNode->Outputs) {          // seed body inputs by name
+            if (op.Type == PinType::Flow) continue;
+            if (Pin* ip = InPin(n, op.Name.c_str()))
+                bc.outCache[&op] = c.Pull(ip);
+        }
+
+        ++depth;
+        bc.RunNext(*inNode);
+        --depth;
+
+        if (bc.returned) {
+            size_t i = 0;
+            for (Pin& ip : outNode->Inputs) {
+                if (ip.Type == PinType::Flow) continue;
+                if (i < results.size()) c.SetOut(n, ip.Name.c_str(), results[i]);
+                ++i;
+            }
+        }
+        c.RunNext(n);
     }
 };
 
@@ -460,6 +580,10 @@ NodeLogic* LogicFor(const std::string& name) {
     static PrintLogic           print;
     static DrawTextLogic        drawText;
     static DrawLineLogic        drawLine;
+    static GetVarLogic          getVar;
+    static SetVarLogic          setVar;
+    static CustomOutputLogic    customOut;
+    static CustomInstanceLogic  customInstance;
 
     static const std::unordered_map<std::string, NodeLogic*> map = {
         { "GetWorld", &getWorld }, { "FindObject", &findObject }, { "GetObjectsOfClass", &getObjects },
@@ -470,25 +594,30 @@ NodeLogic* LogicFor(const std::string& name) {
         { "Add", &math }, { "Subtract", &math }, { "Multiply", &math }, { "Divide", &math },
         { "A > B", &math }, { "A < B", &math }, { "A == B", &math }, { "And", &math }, { "Or", &math },
         { "Not", &notLogic }, { "GetParam", &getParam },
+        { "GetVar", &getVar }, { "SetVar", &setVar }, { "CustomOutput", &customOut },
         { "Sequence", &sequence }, { "Branch", &branch }, { "ForEach", &forEach },
         { "ForLoop", &forLoop }, { "WhileLoop", &whileLoop },
         { "SetValue", &setValue }, { "CallFunction", &callFn }, { "Print", &print },
         { "DrawText", &drawText }, { "DrawLine", &drawLine },
     };
     auto it = map.find(name);
-    return it != map.end() ? it->second : &base;
+    if (it != map.end()) return it->second;
+    if (CustomNodes::Find(name)) return &customInstance;
+    return &base;
 }
 
-void RegisterHook(Graph& g, Node& node, bool post) {
+static int RegisterHook(Graph& g, Node& node, bool post) {
     Pin* fnPin = InPin(node, "Function");
     std::string fn = fnPin ? fnPin->DefaultValue : "";
     if (fn.empty()) {
         FailNode(node, "Function: not set");
-        return;
+        return 0;
     }
     Node* np = &node;
     Graph* gp = &g;
-    auto cb = [gp, np, post](Hooking::HookContext& hc) {
+    std::atomic<bool>* gate = &g.Playing;
+    auto cb = [gp, np, post, gate](Hooking::HookContext& hc) {
+        if (!gate->load(std::memory_order_relaxed)) return;
         Ctx ctx(*gp);
         ctx.SetOut(*np, "Caller", EValue(UEValue::MakeObject(hc.Caller.GetAddress())));
         if (Pin* pp = OutPin(*np, "Params")) ctx.paramsCache[pp] = hc.Params;
@@ -501,6 +630,7 @@ void RegisterHook(Graph& g, Node& node, bool post) {
     int h = post ? Hooking::AddPostByName(fn, cb)
                  : Hooking::AddPreByName(fn, cb);
     if (!h) FailNode(node, "function '" + fn + "' not found");
+    return h;
 }
 
 } // namespace
@@ -520,14 +650,21 @@ const char* BackendStatus()
     return UE::IsInitialized() ? "ready" : "init failed";
 }
 
-void RunGraph(Graph& g) {
+bool StartHook(Graph& g, Node& n) {
     if (!UE::IsInitialized()) {
-        printf("[RunGraph] backend not initialized\n");
-        return;
+        FailNode(n, "backend not initialized");
+        return false;
     }
-    for (Node& n : g.Nodes) {
-        if (n.Name == "PreHook")  RegisterHook(g, n, false);
-        if (n.Name == "PostHook") RegisterHook(g, n, true);
+    if (n.HookHandle) return true;   // already running
+    int h = RegisterHook(g, n, n.Type == "PostHook");
+    if (h) n.HookHandle = h;
+    return h != 0;
+}
+
+void StopHook(Node& n) {
+    if (n.HookHandle) {
+        Hooking::Remove(n.HookHandle);
+        n.HookHandle = 0;
     }
 }
 
@@ -550,7 +687,7 @@ void TickFrame(Graph& g) {
     if (!UE::IsInitialized()) return;
     Ctx ctx(g);   // frame-render + draw run on the UI thread (reads only; writes here are unsafe)
     for (Node& n : g.Nodes)
-        if (n.Name == "OnFrameRender") ctx.RunNext(n);
+        if (n.Type == "OnFrameRender") ctx.RunNext(n);
 }
 
 } // namespace Exec

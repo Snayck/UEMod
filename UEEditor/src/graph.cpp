@@ -4,10 +4,11 @@
 
 using namespace Editor;
 
-static int64_t NowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+static double SteadyNowSec() {
+    return std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+static double NanosToSec(int64_t ns) { return (double)ns * 1e-9; }
 
 Pin* FindPin(Graph& g, ed::PinId id) {
     if (!id) return nullptr;
@@ -40,7 +41,7 @@ bool IsValidConnection(Graph& g, ed::PinId aId, ed::PinId bId) {
     return TypesCompatible(out->Type, in->Type);
 }
 
-void RemoveLinksTouchingNode(Graph& g, const Node& node) {
+void Editor::RemoveLinksTouchingNode(Graph& g, const Node& node) {
     auto belongsToNode = [&](ed::PinId pin) {
         for (const Pin& p : node.Inputs)  if (p.ID == pin) return true;
         for (const Pin& p : node.Outputs) if (p.ID == pin) return true;
@@ -97,12 +98,60 @@ static void DrawTypeSelector(Graph& g, Pin& p) {
     ImGui::PopID();
 }
 
+// cycle a pin's type; drops links when the type changes
+static void TypeCycleButton(Graph& g, Pin& p) {
+    static const PinType kCycle[] = { PinType::Bool, PinType::Int, PinType::Float, PinType::String,
+                                      PinType::Name, PinType::Object, PinType::Struct, PinType::Array, PinType::Any };
+    static const char* kCycleNames[] = { "Bool", "Int", "Float", "String", "Name", "Object", "Struct", "Array", "Any" };
+    int cur = 0;
+    for (int i = 0; i < IM_ARRAYSIZE(kCycle); ++i)
+        if (kCycle[i] == p.Type) cur = i;
+    ImGui::PushID(p.ID.AsPointer());
+    if (ImGui::Button(kCycleNames[cur], ImVec2(60, 0))) {
+        p.Type = kCycle[(cur + 1) % IM_ARRAYSIZE(kCycle)];
+        RemoveLinksTouchingPin(g, p.ID);
+        g.Dirty = true;
+    }
+    ImGui::PopID();
+}
+
+// editable pin row for the CustomInput / CustomOutput interface nodes
+static void DrawCustomIOPin(Graph& g, Pin& p) {
+    ImGui::PushID(p.ID.AsPointer());
+    ImGui::SetNextItemWidth(110);
+    char buf[64];
+    strncpy(buf, p.Name.c_str(), sizeof buf); buf[63] = 0;
+    if (ImGui::InputText("##nm", buf, sizeof buf)) {
+        p.Name = buf;
+        g.Dirty = true;
+    }
+    ImGui::SameLine();
+    TypeCycleButton(g, p);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) {
+        RemoveLinksTouchingPin(g, p.ID);
+        p.Name = "\x01__del";
+        g.Dirty = true;
+    }
+    ImGui::PopID();
+}
+
 void Editor::RenderNodes(Graph& g) {
+    // drop pins flagged for deletion (CustomInput/Output "x" buttons)
+    for (Node& n : g.Nodes) {
+        auto drop = [](std::vector<Pin>& pins) {
+            pins.erase(std::remove_if(pins.begin(), pins.end(),
+                [](const Pin& p) { return p.Name == "\x01__del"; }), pins.end());
+        };
+        drop(n.Inputs);
+        drop(n.Outputs);
+    }
+
     for (Node& n : g.Nodes) {
         float errAlpha = 0.0f;
         int64_t errNs = n.ErrorNs.load(std::memory_order_relaxed);
         if (errNs > 0) {
-            double age = (double)(NowNs() - errNs) * 1e-9;
+            double age = SteadyNowSec() - NanosToSec(errNs);
             if (age >= 0.0 && age < 2.0)
                 errAlpha = (age < 1.0) ? 1.0f : (float)(2.0 - age);
         }
@@ -115,11 +164,23 @@ void Editor::RenderNodes(Graph& g) {
         ed::BeginNode(n.ID);
         ImGui::PushID(n.ID.AsPointer());
 
+        n.Pos = ed::GetNodePosition(n.ID);
+
         ImGui::TextColored(n.Color, "%s", n.Name.c_str());
-        if (n.Name == "ScriptStart") {
+        if (n.Type == "ScriptStart") {
             ImGui::SameLine();
             if (ImGui::SmallButton("Run"))
                 Exec::RunScriptNode(g, n);
+        }
+        if (n.Type == "PreHook" || n.Type == "PostHook") {
+            ImGui::SameLine();
+            bool on = n.HookHandle > 0;
+            ImGui::PushStyleColor(ImGuiCol_Text, on ? ImColor(80, 220, 100).Value : ImColor(150, 150, 150).Value);
+            ImGui::TextUnformatted(on ? "on" : "off");
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            if (ImGui::SmallButton(on ? "Stop" : "Start"))
+                on ? Exec::StopHook(n) : (void)Exec::StartHook(g, n);
         }
         ImGui::Dummy(ImVec2(0, 4));
 
@@ -134,7 +195,10 @@ void Editor::RenderNodes(Graph& g) {
             DrawPinIcon(g, p);
             ImGui::SameLine();
             ImGui::TextUnformatted(p.Name.c_str());
-            if (IsLiteralType(p.Type) && !IsPinConnected(g, p.ID)) {
+            if (n.Type == "CustomOutput" && p.Type != PinType::Flow) {
+                ImGui::SameLine();
+                DrawCustomIOPin(g, p);
+            } else if (IsLiteralType(p.Type) && !IsPinConnected(g, p.ID)) {
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(80);
                 char buf[128];
@@ -166,7 +230,21 @@ void Editor::RenderNodes(Graph& g) {
             ImGui::TextUnformatted(p.Name.c_str());
             ImGui::SameLine();
             DrawPinIcon(g, p);
+            if (n.Type == "CustomInput" && p.Type != PinType::Flow) {
+                ImGui::SameLine();
+                DrawCustomIOPin(g, p);
+            }
             ed::EndPin();
+        }
+        if (n.Type == "CustomInput" && ImGui::SmallButton("+ Output")) {
+            Pin& p = n.Outputs.emplace_back(g.GetNextId(), "In", PinType::Any);
+            p.Node = &n; p.Kind = PinKind::Output;
+            g.Dirty = true;
+        }
+        if (n.Type == "CustomOutput" && ImGui::SmallButton("+ Input")) {
+            Pin& p = n.Inputs.emplace_back(g.GetNextId(), "Out", PinType::Any);
+            p.Node = &n; p.Kind = PinKind::Input;
+            g.Dirty = true;
         }
         ImGui::EndGroup();
 
@@ -192,6 +270,7 @@ void Editor::PollInput(Graph& g) {
                 if (IsValidConnection(g, startId, endId)) {
                     if (ed::AcceptNewItem()) {
                         g.Links.push_back(Link(g.NextId++, startId, endId));
+                        g.Dirty = true;
                     }
                 } else {
                     ed::RejectNewItem(ImColor(255,0,0), 2.0f);
@@ -209,6 +288,7 @@ void Editor::PollInput(Graph& g) {
                     [&](const Link& l){ return l.ID == deletedLinkId; });
                 if (it != g.Links.end())
                     g.Links.erase(it);
+                g.Dirty = true;
             }
         }
 
@@ -218,11 +298,78 @@ void Editor::PollInput(Graph& g) {
                 auto nit = std::find_if(g.Nodes.begin(), g.Nodes.end(),
                     [&](const Node& n){ return n.ID == deletedNodeId; });
                 if (nit != g.Nodes.end()) {
+                    Exec::StopHook(*nit);
                     RemoveLinksTouchingNode(g, *nit);
                     g.Nodes.erase(nit);
+                    g.Dirty = true;
                 }
             }
         }
     }
     ed::EndDelete();
+
+    // ---- context menus ---------------------------------------------------------
+    // Show*ContextMenu returns true only on the frame the right-click happens:
+    // open the popup then, and submit it every frame below while it stays open.
+    static ed::NodeId ctxNode;
+    static ed::LinkId ctxLink;
+    static ed::PinId  ctxPin;
+    bool wantNode = ed::ShowNodeContextMenu(&ctxNode);
+    bool wantLink = ed::ShowLinkContextMenu(&ctxLink);
+    bool wantPin  = ed::ShowPinContextMenu(&ctxPin);
+    if (wantNode || wantLink || wantPin) {
+        ed::Suspend();
+        if (wantNode) ImGui::OpenPopup("##nodectx");
+        if (wantLink) ImGui::OpenPopup("##linkctx");
+        if (wantPin)  ImGui::OpenPopup("##pinctx");
+        ed::Resume();
+    }
+
+    ed::Suspend();
+    if (ImGui::BeginPopup("##nodectx")) {
+        auto nit = std::find_if(g.Nodes.begin(), g.Nodes.end(),
+            [&](const Node& n){ return n.ID == ctxNode; });
+        if (nit != g.Nodes.end()) {
+            Node& n = *nit;
+            if (ImGui::MenuItem("Duplicate")) {
+                Node& copy = g.Nodes.emplace_back(g.GetNextId(), n.Type.c_str(), n.Color);
+                copy.Name = n.Name;
+                copy.Meta = n.Meta;
+                copy.Pos = ImVec2(n.Pos.x + 48, n.Pos.y + 48);
+                for (const Pin& p : n.Inputs)
+                    copy.Inputs.emplace_back(g.GetNextId(), p.Name.c_str(), p.Type).DefaultValue = p.DefaultValue;
+                for (const Pin& p : n.Outputs)
+                    copy.Outputs.emplace_back(g.GetNextId(), p.Name.c_str(), p.Type).DefaultValue = p.DefaultValue;
+                for (Pin& p : copy.Inputs)  { p.Node = &copy; p.Kind = PinKind::Input; }
+                for (Pin& p : copy.Outputs) { p.Node = &copy; p.Kind = PinKind::Output; }
+                ed::SetNodePosition(copy.ID, copy.Pos);
+                g.Dirty = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Delete")) {
+                Exec::StopHook(n);
+                RemoveLinksTouchingNode(g, n);
+                g.Nodes.erase(nit);
+                g.Dirty = true;
+            }
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##linkctx")) {
+        if (ImGui::MenuItem("Delete Link")) {
+            auto it = std::find_if(g.Links.begin(), g.Links.end(),
+                [&](const Link& l){ return l.ID == ctxLink; });
+            if (it != g.Links.end()) {
+                g.Links.erase(it);
+                g.Dirty = true;
+            }
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##pinctx")) {
+        if (ImGui::MenuItem("Disconnect"))
+            RemoveLinksTouchingPin(g, ctxPin);
+        ImGui::EndPopup();
+    }
+    ed::Resume();
 }

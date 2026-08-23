@@ -5,18 +5,28 @@ using namespace Toolbox;
 using namespace Nodes;
 
 static void Entry(const char* label, Node* (*spawn)(Graph&), Graph& g) {
-    if (ImGui::Button(label, ImVec2(-1, 0)))
+    if (ImGui::Button(label, ImVec2(-1, 0))) {
         spawn(g);
+        g.Dirty = true;
+    }
 }
 
-void Toolbox::Render(Editor::Graph& g) {
-    if (ImGui::CollapsingHeader("Events", ImGuiTreeNodeFlags_DefaultOpen)) {
-        Entry("Script Start", SpawnScriptStartNode, g);
-        Entry("On Key Press",  OnKeyPress, g);
-        Entry("On Frame Render", OnFrameRender, g);
-        Entry("Pre Hook",  PreHook, g);
-        Entry("Post Hook", PostHook, g);
-        Entry("Get Param", GetParam, g);
+// state shared with app.cpp for the create/edit popups
+namespace Toolbox {
+    bool ShowCreateCustom = false;
+    std::string EditCustomName;
+}
+
+void Toolbox::Render(Editor::Graph& g, bool limited) {
+    if (!limited) {
+        if (ImGui::CollapsingHeader("Events", ImGuiTreeNodeFlags_DefaultOpen)) {
+            Entry("Script Start", SpawnScriptStartNode, g);
+            Entry("On Key Press",  OnKeyPress, g);
+            Entry("On Frame Render", OnFrameRender, g);
+            Entry("Pre Hook",  PreHook, g);
+            Entry("Post Hook", PostHook, g);
+            Entry("Get Param", GetParam, g);
+        }
     }
     if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
         Entry("Sequence", Sequence, g);
@@ -41,6 +51,9 @@ void Toolbox::Render(Editor::Graph& g) {
         Entry("Get All Methods",     GetAllMethods, g);
         Entry("Array Length",        ArrayLength, g);
         Entry("Array Get",           ArrayGet, g);
+    }
+    if (!limited) {
+        // variable nodes are spawned from the Variables panel (they need a var)
     }
     if (ImGui::CollapsingHeader("Values")) {
         Entry("Literal", Literal, g);
