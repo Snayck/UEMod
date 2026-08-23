@@ -5,6 +5,7 @@
 // -------- standalone .exe: no backend --------
 namespace Exec {
     void InitBackend() {}
+    void WaitForInit() {}
     bool BackendReady() { return false; }
     const char* BackendStatus() { return "standalone (no backend)"; }
     void RunScriptNode(Editor::Graph&, Editor::Node&) {}
@@ -18,8 +19,10 @@ namespace Exec {
 #include "imgui.h"
 #include "UEHook.h"
 #include "customnodes.h"
+#include <atomic>
 #include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <cstdio>
@@ -637,22 +640,39 @@ static int RegisterHook(Graph& g, Node& node, bool post) {
 
 namespace Exec {
 
-void InitBackend() {
-    UEHookConfig cfg;
-    cfg.verbose = true;
-    UE::Initialize(cfg);
+namespace {
+    std::atomic<int> g_InitState{ 0 };   // 0 = running, 1 = ok, -1 = failed
+    std::thread g_InitThread;
 }
 
-bool BackendReady() { return UE::IsInitialized(); }
+void InitBackend() {
+    if (g_InitThread.joinable()) return;
+    g_InitThread = std::thread([] {
+        UEHookConfig cfg;
+        cfg.verbose = true;
+        g_InitState.store(UE::Initialize(cfg) ? 1 : -1, std::memory_order_release);
+    });
+}
+
+void WaitForInit() {
+    if (g_InitThread.joinable())
+        g_InitThread.join();
+}
+
+bool BackendReady() { return g_InitState.load(std::memory_order_acquire) == 1; }
 
 const char* BackendStatus()
 {
-    return UE::IsInitialized() ? "ready" : "init failed";
+    switch (g_InitState.load(std::memory_order_acquire)) {
+    case 1:  return "ready";
+    case -1: return "init failed";
+    default: return "initializing...";
+    }
 }
 
 bool StartHook(Graph& g, Node& n) {
     if (!UE::IsInitialized()) {
-        FailNode(n, "backend not initialized");
+        FailNode(n, std::string("backend ") + BackendStatus());
         return false;
     }
     if (n.HookHandle) return true;   // already running
@@ -670,7 +690,7 @@ void StopHook(Node& n) {
 
 void RunScriptNode(Graph& g, Node& n) {
     if (!UE::IsInitialized()) {
-        FailNode(n, "backend not initialized (see Control window)");
+        FailNode(n, std::string("backend ") + BackendStatus());
         return;
     }
     Node* np = &n;

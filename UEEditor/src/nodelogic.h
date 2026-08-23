@@ -3,9 +3,10 @@
 
 // Execution layer; no-ops in the standalone .exe (UEEDITOR_WITH_BACKEND).
 namespace Exec {
-    void InitBackend();
+    void InitBackend();   // async; returns immediately
+    void WaitForInit();   // block until async init finished (call at shutdown)
     bool BackendReady();
-    const char* BackendStatus();
+    const char* BackendStatus();  // "initializing..." / "ready" / "init failed"
     void RunScriptNode(Editor::Graph& g, Editor::Node& n); // run a ScriptStart chain
     bool StartHook(Editor::Graph& g, Editor::Node& n);     // register this Pre/PostHook node
     void StopHook(Editor::Node& n);                        // unregister

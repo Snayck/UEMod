@@ -39,6 +39,7 @@ set(COMMON_SOURCES
     src/nodelogic.cpp
     src/customnodes.cpp
     src/serialize.cpp
+    src/calllogger.cpp
     ${IMGUI_SOURCES}
     ${NE_SOURCES}
 )

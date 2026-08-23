@@ -164,14 +164,21 @@ namespace UE
 
     UEFunction FindFunction(const std::string& name)
     {
+        // accepts short name, full path, or "Function <full path>"
+        std::string r = name;
+        if (r.rfind("Function ", 0) == 0) r = r.substr(9);
+        bool isPath = r.find(':') != std::string::npos || r.find('/') != std::string::npos;
+
         const int32 count = ObjectArray::Num();
         for (int32 i = 0; i < count; ++i)
         {
             void* o = ObjectArray::GetByIndex(i);
             if (!o) continue;
             UEObject obj(o);
-            if (obj.GetClassName() == "Function" && UENames::EqualsCI(obj.GetName(), name))
-                return UEFunction(o);
+            if (obj.GetClassName() != "Function") continue;
+            bool match = isPath ? UENames::EqualsCI(obj.GetPathName(), r)
+                                : UENames::EqualsCI(obj.GetName(), r);
+            if (match) return UEFunction(o);
         }
         return UEFunction();
     }

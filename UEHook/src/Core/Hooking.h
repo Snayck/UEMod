@@ -70,4 +70,13 @@ namespace Hooking
     int AddPostByName(const std::string& funcName, HookCallback cb);
 
     bool Remove(int handle);
+
+    // Observes every ProcessEvent call (one slot; nullptr detaches).
+    // pre runs before the original -- return true to also receive post.
+    struct CallSink
+    {
+        std::function<bool(HookContext&)> pre;
+        std::function<void(HookContext&)> post;   // post: ctx.Result = return buffer
+    };
+    void SetCallSink(CallSink* sink);
 }

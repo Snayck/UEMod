@@ -34,6 +34,8 @@ namespace
     std::mutex               g_logMutex;
     std::unordered_set<int32> g_logged;
 
+    std::atomic<Hooking::CallSink*> g_sink{ nullptr };
+
     // ---- game-thread dispatch queue ----
     std::mutex                          g_taskMutex;
     std::vector<std::function<void()>>  g_tasks;
@@ -135,21 +137,47 @@ namespace
 
         ++depth;
 
+        bool sinkWantsPost = false;
+        if (Hooking::CallSink* sink = g_sink.load(std::memory_order_relaxed))
+        {
+            if (sink->pre)
+                sinkWantsPost = sink->pre(ctx);
+        }
+
         for (auto& e : pre)
             e.cb(ctx);
 
         if (ctx.ShouldCall && g_original)
             g_original(caller, func, params);
 
-        if (!post.empty())
+        if (!post.empty() || sinkWantsPost)
         {
             ctx.IsPost = true;
             ctx.Result = ComputeReturn(ueFunc, params);
             for (auto& e : post)
                 e.cb(ctx);
+            if (sinkWantsPost)
+            {
+                if (Hooking::CallSink* sink = g_sink.load(std::memory_order_relaxed))
+                {
+                    if (sink->post)
+                        sink->post(ctx);
+                }
+            }
         }
 
         --depth;
+    }
+
+    // Matches "GetMousePosition", "/Script/Engine.PlayerController:GetMousePosition",
+    // or "Function /Script/..." (the call logger's copyable format).
+    bool MatchesFuncName(const UEObject& obj, const std::string& requested)
+    {
+        std::string r = requested;
+        if (r.rfind("Function ", 0) == 0) r = r.substr(9);
+        if (r.find(':') != std::string::npos || r.find('/') != std::string::npos)
+            return UENames::EqualsCI(obj.GetPathName(), r);
+        return UENames::EqualsCI(obj.GetName(), r);
     }
 
     UEFunction FindFunctionByName(const std::string& name)
@@ -160,7 +188,7 @@ namespace
             void* o = ObjectArray::GetByIndex(i);
             if (!o) continue;
             UEObject obj(o);
-            if (obj.GetClassName() == "Function" && UENames::EqualsCI(obj.GetName(), name))
+            if (obj.GetClassName() == "Function" && MatchesFuncName(obj, name))
                 return UEFunction(o);
         }
         return UEFunction();
@@ -271,6 +299,11 @@ namespace Hooking
             g_logged.clear();
         }
         g_logAll = enabled;
+    }
+
+    void SetCallSink(CallSink* sink)
+    {
+        g_sink.store(sink, std::memory_order_release);
     }
 
     int AddPre(UEFunction func, HookCallback cb)

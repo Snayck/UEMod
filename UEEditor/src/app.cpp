@@ -8,6 +8,7 @@
 #include "nodelogic.h"
 #include "customnodes.h"
 #include "serialize.h"
+#include "calllogger.h"
 #include "app.h"
 #include <d3d11.h>
 #include <tchar.h>
@@ -106,19 +107,24 @@ static void SaveActiveAs(const std::string& name) {
 }
 
 // remove every instance of a deleted custom node def from all open scripts
+// and other defs' bodies (nested use)
 static void PurgeCustomInstances(const std::string& defName) {
-    for (ScriptTab& tab : g_Tabs) {
-        auto& nodes = tab.Graph.Nodes;
-        for (auto it = nodes.begin(); it != nodes.end();) {
+    auto purge = [&](Editor::Graph& g) {
+        for (auto it = g.Nodes.begin(); it != g.Nodes.end();) {
             if (it->Type == defName) {
-                Editor::RemoveLinksTouchingNode(tab.Graph, *it);
-                it = nodes.erase(it);
-                tab.Graph.Dirty = true;
+                Editor::RemoveLinksTouchingNode(g, *it);
+                it = g.Nodes.erase(it);
+                g.Dirty = true;
             } else {
                 ++it;
             }
         }
-    }
+    };
+    for (ScriptTab& tab : g_Tabs)
+        purge(tab.Graph);
+    for (CustomNodeDef& d : CustomNodes::All())
+        if (d.Name != defName)
+            purge(d.Body);
 }
 
 static const char* kVarTypeNames[] = { "Any", "Bool", "Int", "Float", "String", "Name", "Object" };
@@ -213,13 +219,17 @@ static void RenderCustomNodesPanel() {
         for (CustomNodeDef& d : CustomNodes::All()) {
             if (d.Category != cat) continue;
             ImGui::PushID(d.Name.c_str());
-            if (ImGui::Button(d.Name.c_str(), ImVec2(-1, 0)) && !g_Tabs.empty())
+            float w = ImGui::GetContentRegionAvail().x - 110;
+            if (w < 60) w = 60;
+            if (ImGui::Button(d.Name.c_str(), ImVec2(w, 0)) && !g_Tabs.empty())
                 CustomNodes::SpawnInstance(g_Active->Graph, d);
             ImGui::SameLine();
             if (ImGui::SmallButton("Edit"))
                 CustomNodes::EditName = d.Name;
             ImGui::SameLine();
             if (ImGui::SmallButton("Del")) {
+                if (CustomNodes::EditName == d.Name)
+                    CustomNodes::EditName.clear();
                 PurgeCustomInstances(d.Name);
                 CustomNodes::Delete(d.Name);
                 IO::SaveCustomNodes();
@@ -391,6 +401,7 @@ int RunApp()
     g_Active = g_Tabs.begin();
 
     Exec::InitBackend();   // no-op in the standalone build
+    CallLogger::Init();
 
     bool done = false;
     while (!done)
@@ -553,6 +564,7 @@ int RunApp()
             }
             RenderCustomNodesPanel();
 
+            CallLogger::Render();
             RenderCustomEditor();
             RenderCreateCustomPopup();
             RenderLoadPopup();
@@ -573,6 +585,8 @@ int RunApp()
         g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
     }
 
+    Exec::WaitForInit();   // async init must not outlive the editor
+    CallLogger::Shutdown();
     for (ScriptTab& tab : g_Tabs) {
         StopTabHooks(tab);
         ed::DestroyEditor(tab.Ctx);
