@@ -4,7 +4,8 @@
 #include <vector>
 
 namespace IO {
-    std::string BaseDir();          // "<module dir>/UEEditorFiles", created on demand
+    std::string ModuleDir();         // directory of the exe/dll
+    std::string BaseDir();           // "<module dir>/UEEditorFiles", created on demand
     std::string ScriptsDir();
 
     bool SaveGraph(const Editor::Graph& g, const std::string& path);

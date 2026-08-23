@@ -143,15 +143,22 @@ void GraphFromJson(const crude_json::value& j, Graph& g) {
 
 namespace IO {
 
-std::string BaseDir() {
+std::string ModuleDir() {
     static std::string cached;
     if (!cached.empty()) return cached;
     HMODULE mod = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCWSTR)&BaseDir, &mod);
+                       (LPCWSTR)&ModuleDir, &mod);
     WCHAR buf[MAX_PATH] = {};
     GetModuleFileNameW(mod, buf, MAX_PATH);
-    fs::path dir = fs::path(buf).parent_path() / "UEEditorFiles";
+    cached = fs::path(buf).parent_path().string();
+    return cached;
+}
+
+std::string BaseDir() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    fs::path dir = fs::path(ModuleDir()) / "UEEditorFiles";
     std::error_code ec;
     fs::create_directories(dir, ec);
     cached = dir.string();

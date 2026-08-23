@@ -25,6 +25,8 @@ namespace Hooking
         bool  ShouldCall = true;        // PRE only: set false to skip the original
         void* Result     = nullptr;     // POST only: the return-value buffer
         bool  IsPost     = false;       // false in pre-hooks, true in post-hooks
+        bool  FromVM     = false;       // true when dispatched via ProcessInternal
+                                        // (a call made from Blueprint bytecode)
     };
 
     // One callback type for both pre- and post-hooks. std::function, so a plain

@@ -72,6 +72,7 @@ struct Entry {
     bool ReturnRead = false;
     bool ViewsInitialized = false;
     std::vector<std::string> Values;
+    bool FromVM = false;
 };
 
 std::atomic<bool> g_Capturing{ false };
@@ -165,6 +166,7 @@ void Init() {
         Entry e;
         e.Seq = g_NextSeq++;
         e.FuncPtr = ctx.Function.GetAddress();
+        e.FromVM = ctx.FromVM;
         e.CallerName = ctx.Caller ? ctx.Caller.GetName() : "?";
         e.FuncShort = fi.ShortName;
         e.FuncFull = fi.FullName;
@@ -281,7 +283,8 @@ void Render() {
                 if (eit == g_BySeq.end() || eit->second == g_Entries.end()) continue;
                 Entry& e = *eit->second;
                 ImGui::PushID((int)e.Seq);
-                if (ImGui::TreeNode("#", "#%d  %s", (int)e.Seq, e.CallerName.c_str())) {
+                if (ImGui::TreeNode("#", "%s#%d  %s",
+                        e.FromVM ? "[VM] " : "", (int)e.Seq, e.CallerName.c_str())) {
                     if (!e.ViewsInitialized) SerializeValues(e);
                     char full[512];
                     strncpy(full, e.FuncFull.c_str(), sizeof full); full[sizeof full - 1] = 0;

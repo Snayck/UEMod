@@ -6,6 +6,7 @@
 
 #include <map>
 #include <vector>
+#include <unordered_map>
 #include <unordered_set>
 #include <shared_mutex>
 #include <atomic>
@@ -35,6 +36,108 @@ namespace
     std::unordered_set<int32> g_logged;
 
     std::atomic<Hooking::CallSink*> g_sink{ nullptr };
+
+    // ---- ProcessInternal (Blueprint VM) hook --------------------------------
+    // ProcessEvent only sees calls entering via reflection. Calls made from
+    // running Blueprint bytecode (EX_CallFunction) reach scripted functions
+    // through UObject::ProcessInternal instead. Found without signatures:
+    // every non-native UFunction's Func points at it.
+    using PIFn = uint8(*)(void*, void*, void*);
+
+    PIFn             g_piOriginal = nullptr;
+    void*            g_piTarget = nullptr;
+    std::atomic<bool> g_piInstalled{ false };
+    std::atomic<int>  g_ffNodeOff{ -1 };   // FFrame::Node offset (-2 = calib failed)
+    thread_local std::vector<void*> tl_ScriptedExec;   // PE-dispatched scripted funcs
+
+    bool LooksLikeFunctionPtr(void* p) {
+        if (!p || !SafeMemory::IsReasonable(reinterpret_cast<uintptr_t>(p))) return false;
+        return UEObject(p).GetClassName() == "Function";
+    }
+
+    int CalibrateFrame(void* stack) {
+        for (int off = 0; off <= 0x20; off += 8) {
+            void* node = nullptr;
+            if (!SafeMemory::Read<void*>(reinterpret_cast<uintptr_t>(stack) + off, &node))
+                continue;
+            if (!LooksLikeFunctionPtr(node)) continue;
+            void* obj = nullptr;
+            if (!SafeMemory::Read<void*>(reinterpret_cast<uintptr_t>(stack) + off + 8, &obj))
+                continue;
+            if (!obj || !SafeMemory::IsReasonable(reinterpret_cast<uintptr_t>(obj))) continue;
+            if (UEObject(obj).GetClassName().empty()) continue;
+            return off;
+        }
+        return -2;
+    }
+
+    void* FindProcessInternal() {
+        std::unordered_map<void*, int> counts;
+        void* best = nullptr;
+        int bestCount = 0;
+        const int32 count = ObjectArray::Num();
+        for (int32 i = 0; i < count; ++i)
+        {
+            void* o = ObjectArray::GetByIndex(i);
+            if (!o) continue;
+            UEObject obj(o);
+            if (obj.GetClassName() != "Function") continue;
+            UEFunction fn(o);
+            if (fn.HasFlags(EFunctionFlags::Native)) continue;
+            void* f = fn.GetExecFunction();
+            if (!f) continue;
+            int& c = counts[f];
+            if (++c > bestCount) { bestCount = c; best = f; }
+        }
+        return bestCount >= 8 ? best : nullptr;
+    }
+
+    uint8 ProcessInternalDetour(void* context, void* stackVoid, void* result)
+    {
+        static thread_local int depth = 0;
+
+        if (stackVoid && depth <= 64 && g_sink.load(std::memory_order_relaxed))
+        {
+            int nodeOff = g_ffNodeOff.load(std::memory_order_relaxed);
+            if (nodeOff == -1)
+                g_ffNodeOff.store(nodeOff = CalibrateFrame(stackVoid), std::memory_order_relaxed);
+
+            if (nodeOff >= 0)
+            {
+                uintptr_t sp = reinterpret_cast<uintptr_t>(stackVoid);
+                void* node = nullptr;
+                void* obj = nullptr;
+                void* locals = nullptr;
+                SafeMemory::Read<void*>(sp + nodeOff, &node);
+                SafeMemory::Read<void*>(sp + nodeOff + 8, &obj);
+                SafeMemory::Read<void*>(sp + nodeOff + 0x18, &locals);
+
+                bool peDispatched = !tl_ScriptedExec.empty() && tl_ScriptedExec.back() == node;
+                if (node && !peDispatched)
+                {
+                    if (Hooking::CallSink* sink = g_sink.load(std::memory_order_relaxed))
+                    {
+                        if (sink->pre)
+                        {
+                            UEFunction fn(node);
+                            Hooking::HookContext ctx;
+                            ctx.Caller    = UEObject(obj);
+                            ctx.Function  = fn;
+                            ctx.Params    = UEParams(fn, locals);
+                            ctx.RawParams = locals;
+                            ctx.FromVM    = true;
+                            sink->pre(ctx);
+                        }
+                    }
+                }
+            }
+        }
+
+        ++depth;
+        uint8 r = g_piOriginal(context, stackVoid, result);
+        --depth;
+        return r;
+    }
 
     // ---- game-thread dispatch queue ----
     std::mutex                          g_taskMutex;
@@ -148,7 +251,14 @@ namespace
             e.cb(ctx);
 
         if (ctx.ShouldCall && g_original)
+        {
+            // mark scripted dispatches so the ProcessInternal detour doesn't
+            // double-report calls that originated here
+            bool scripted = !ueFunc.HasFlags(EFunctionFlags::Native);
+            if (scripted) tl_ScriptedExec.push_back(func);
             g_original(caller, func, params);
+            if (scripted) tl_ScriptedExec.pop_back();
+        }
 
         if (!post.empty() || sinkWantsPost)
         {
@@ -223,6 +333,28 @@ namespace Hooking
         // Manual UEObject::ProcessEvent calls should bypass our detour.
         Off::InSDK::ProcessEvent::Callable = reinterpret_cast<void*>(g_original);
         g_installed = true;
+
+        g_piTarget = FindProcessInternal();
+        if (g_piTarget)
+        {
+            if (MinHook::MH_CreateHook(g_piTarget, reinterpret_cast<LPVOID>(&ProcessInternalDetour),
+                                       reinterpret_cast<LPVOID*>(&g_piOriginal)) == MinHook::MH_STATUS::MH_OK
+                && MinHook::MH_EnableHook(g_piTarget) == MinHook::MH_STATUS::MH_OK)
+            {
+                g_piInstalled = true;
+            }
+            else
+            {
+                MinHook::MH_RemoveHook(g_piTarget);
+                g_piOriginal = nullptr;
+                g_piTarget = nullptr;
+            }
+        }
+
+        if (g_piInstalled.load())
+            std::printf("[UEHook] ProcessInternal hooked at %p (VM calls visible)\n", g_piTarget);
+        else
+            std::printf("[UEHook] ProcessInternal not found; Blueprint-internal calls invisible\n");
         return true;
     }
 
@@ -230,6 +362,15 @@ namespace Hooking
     {
         if (!g_installed)
             return;
+
+        if (g_piInstalled.exchange(false))
+        {
+            MinHook::MH_DisableHook(g_piTarget);
+            MinHook::MH_RemoveHook(g_piTarget);
+            g_piOriginal = nullptr;
+            g_piTarget = nullptr;
+            g_ffNodeOff.store(-1, std::memory_order_relaxed);
+        }
 
         void* target = Off::InSDK::ProcessEvent::FuncPtr;
         MinHook::MH_DisableHook(target);

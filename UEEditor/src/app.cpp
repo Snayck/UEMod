@@ -11,10 +11,12 @@
 #include "calllogger.h"
 #include "classcache.h"
 #include "objectexplorer.h"
+#include "default_layout.h"
 #include "app.h"
 #include <d3d11.h>
 #include <tchar.h>
 #include <atomic>
+#include <cstring>
 #include <filesystem>
 #include <list>
 #include <string>
@@ -436,6 +438,17 @@ int RunApp()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+
+    static std::string iniPath = (fs::path(IO::ModuleDir()) / "imgui.ini").string();
+    if (!fs::exists(iniPath)) {
+        FILE* f = nullptr;
+        if (fopen_s(&f, iniPath.c_str(), "wb") == 0 && f) {
+            fwrite(kDefaultLayout, 1, strlen(kDefaultLayout), f);
+            fclose(f);
+        }
+    }
+    io.IniFilename = iniPath.c_str();
+
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
