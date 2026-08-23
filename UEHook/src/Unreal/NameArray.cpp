@@ -18,53 +18,54 @@ bool NameArray::InitPool(uintptr_t base)
     if (!SafeMemory::IsReasonable(base))
         return false;
 
-    // Block-pointer array is inline at base+0x10; block 0 holds the first names.
     uintptr_t block0 = 0;
     if (!SafeMemory::Read<uintptr_t>(base + 0x10, &block0) || !SafeMemory::IsReasonable(block0))
         return false;
 
     constexpr uint32 NoneAsU32   = 0x656E6F4E;         // "None"
-    constexpr uint64 CoreUObjU64 = 0x6A624F5565726F43; // "eroC..." of "/Script/CoreUObject"
+    constexpr uint64 CoreUObjU64 = 0x6A624F5565726F43; // "/Script/CoreUObject"
     constexpr uint32 ByteAsU32   = 0x65747942;         // "Byte" of "ByteProperty"
 
-    // Locate "None" (gives header size / string offset) and confirm this really
-    // is the name pool by also finding the "/Script/CoreUObject" package string.
+    uint8 win[0x2008];
+    if (!SafeMemory::ReadBuffer(block0, win, sizeof win))
+        return false;
+
     int32 headerSize = -1;
     bool  confirmed  = false;
-    for (int i = 0; i < 0x2000; ++i)
+    for (int i = 0; i + 8 <= 0x2000; ++i)
     {
-        uint32 v4 = 0;
-        if (!SafeMemory::Read<uint32>(block0 + i, &v4)) break;
+        uint32 v4; memcpy(&v4, win + i, 4);
         if (v4 == NoneAsU32 && headerSize < 0)
             headerSize = i;
 
-        uint64 v8 = 0;
-        if (SafeMemory::Read<uint64>(block0 + i, &v8) && v8 == CoreUObjU64)
+        uint64 v8; memcpy(&v8, win + i, 8);
+        if (v8 == CoreUObjU64)
         {
             confirmed = true;
             break;
         }
     }
-    if (headerSize < 0 || !confirmed)
+    if (headerSize < 0 || headerSize > 0x40 || !confirmed)
         return false;
 
     StringOffset = headerSize;
     Stride       = (headerSize == 2) ? 2 : 4;
     HeaderOffset = (headerSize == 6) ? 4 : 0;
 
-    // Derive the length shift-count using "ByteProperty" (length 12). The entry
-    // right after "None" is "ByteProperty"; account for up to 4 bytes padding.
-    uintptr_t bpEntry = block0 + StringOffset + 4; // past None's header+string
+    uintptr_t bpEntryOff = StringOffset + 4;
     for (int pad = 0; pad < 4; ++pad)
     {
-        uint32 v = 0;
-        if (SafeMemory::Read<uint32>(bpEntry + StringOffset, &v) && v == ByteAsU32)
+        if (bpEntryOff + StringOffset + 4 > sizeof win) return false;
+        uint32 v; memcpy(&v, win + bpEntryOff + StringOffset, 4);
+        if (v == ByteAsU32)
             break;
-        bpEntry += 1;
+        bpEntryOff += 1;
     }
+    if (bpEntryOff + StringOffset + 4 > sizeof win) return false;
 
     uint16 hdr = 0;
-    SafeMemory::Read<uint16>(bpEntry + HeaderOffset, &hdr);
+    if (bpEntryOff + HeaderOffset + sizeof hdr > sizeof win) return false;
+    memcpy(&hdr, win + bpEntryOff + HeaderOffset, sizeof hdr);
     int32 shift = 0;
     while (hdr != 0x0C && shift < 16) { ++shift; hdr >>= 1; }
     ShiftCount = (shift < 16) ? shift : 6;
@@ -115,7 +116,7 @@ void NameArray::DetermineBlockBits()
         return;
 
     const int32 count = ObjectArray::Num();
-    const int32 sampleMax = count < 4000 ? count : 4000;
+    const int32 sampleMax = count < 600 ? count : 600;
 
     auto scoreForBits = [&](int32 bits) -> int
     {
@@ -200,25 +201,25 @@ std::string NameArray::DecodeEntry(const uint8_t* entry)
         if (len <= 0 || len > 1024)
             return "";
 
-        const uintptr_t strAddr = addr + StringOffset;
+        const size_t bytes = wide ? (size_t)len * 2 : (size_t)len;
+        std::string out;
+        out.resize(wide ? (size_t)len * 2 : (size_t)len);
+        if (!SafeMemory::ReadBuffer(addr + StringOffset, out.data(), bytes))
+            return "";
+
         if (wide)
         {
-            std::string out;
+            const wchar_t* w = reinterpret_cast<const wchar_t*>(out.data());
             for (int i = 0; i < len; ++i)
-            {
-                wchar_t c = 0;
-                if (!SafeMemory::Read<wchar_t>(strAddr + i * sizeof(wchar_t), &c)) break;
-                out += (c >= 0x20 && c <= 0x7E) ? static_cast<char>(c) : '?';
-            }
-            return out;
+                out[i] = (w[i] >= 0x20 && w[i] <= 0x7E) ? static_cast<char>(w[i]) : '?';
         }
-        std::string out;
-        for (int i = 0; i < len; ++i)
+        else
         {
-            char c = 0;
-            if (!SafeMemory::Read<char>(strAddr + i, &c)) break;
-            out += (c >= 0x20 && c <= 0x7E) ? c : '?';
+            for (int i = 0; i < len; ++i)
+                if (out[i] < 0x20 || out[i] > 0x7E)
+                    out[i] = '?';
         }
+        out.resize(len);
         return out;
     }
 

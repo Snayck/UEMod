@@ -53,6 +53,23 @@ public:
         }
     }
 
+    // One guarded block for a whole buffer (vs. per-element SEH overhead).
+    static bool ReadBuffer(uintptr_t address, void* out, size_t length)
+    {
+        if (!out || length == 0 || !IsReasonable(address, length))
+            return false;
+
+        __try
+        {
+            memcpy(out, reinterpret_cast<const void*>(address), length);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     // Null-terminated ANSI read, printable characters only.
     static bool ReadString(uintptr_t address, char* buffer, size_t maxLength)
     {
