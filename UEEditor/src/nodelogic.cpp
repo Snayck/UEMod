@@ -6,6 +6,7 @@
 namespace Exec {
     void InitBackend() {}
     void WaitForInit() {}
+    void ShutdownBackend() {}
     bool BackendReady() { return false; }
     const char* BackendStatus() { return "standalone (no backend)"; }
     void RunScriptNode(Editor::Graph&, Editor::Node&) {}
@@ -657,6 +658,10 @@ void InitBackend() {
 void WaitForInit() {
     if (g_InitThread.joinable())
         g_InitThread.join();
+}
+
+void ShutdownBackend() {
+    UE::Shutdown();
 }
 
 bool BackendReady() { return g_InitState.load(std::memory_order_acquire) == 1; }

@@ -21,6 +21,13 @@
 namespace fs = std::filesystem;
 namespace ed = ax::NodeEditor;
 
+static std::atomic<bool> g_ExitRequested{ false };
+void RequestAppExit() { g_ExitRequested.store(true); }
+
+#ifdef UEEDITOR_WITH_BACKEND
+extern "C" void UEEditorRequestUnload();   // dllmain.cpp
+#endif
+
 // Data
 static ID3D11Device*            g_pd3dDevice = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
@@ -406,6 +413,9 @@ int RunApp()
     bool done = false;
     while (!done)
     {
+        if (g_ExitRequested.load(std::memory_order_relaxed))
+            break;
+
         MSG msg;
         while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE))
         {
@@ -451,6 +461,11 @@ int RunApp()
                     }
                     if (ImGui::MenuItem("Save As...", nullptr, false, !g_Tabs.empty()))
                         g_ShowSaveAs = true;
+#ifdef UEEDITOR_WITH_BACKEND
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Unload DLL"))
+                        UEEditorRequestUnload();
+#endif
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Script", !g_Tabs.empty())) {
@@ -586,11 +601,13 @@ int RunApp()
     }
 
     Exec::WaitForInit();   // async init must not outlive the editor
-    CallLogger::Shutdown();
-    for (ScriptTab& tab : g_Tabs) {
+    for (ScriptTab& tab : g_Tabs)
         StopTabHooks(tab);
+    CallLogger::Shutdown();
+    Exec::ShutdownBackend();   // uninstall the ProcessEvent detour
+
+    for (ScriptTab& tab : g_Tabs)
         ed::DestroyEditor(tab.Ctx);
-    }
     for (CustomNodeDef& d : CustomNodes::All())
         if (d.EdCtx) ed::DestroyEditor(d.EdCtx);
     IO::SaveCustomNodes();
@@ -603,6 +620,7 @@ int RunApp()
     CleanupDeviceD3D();
     ::DestroyWindow(hwnd);
     ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    FreeConsole();
 
     return 0;
 }

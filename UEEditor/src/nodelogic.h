@@ -5,6 +5,7 @@
 namespace Exec {
     void InitBackend();   // async; returns immediately
     void WaitForInit();   // block until async init finished (call at shutdown)
+    void ShutdownBackend(); // unhook ProcessEvent + UEHook teardown
     bool BackendReady();
     const char* BackendStatus();  // "initializing..." / "ready" / "init failed"
     void RunScriptNode(Editor::Graph& g, Editor::Node& n); // run a ScriptStart chain
