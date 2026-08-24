@@ -3,7 +3,7 @@
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/chris_tvyt)
 
 UEMod is a universal Unreal Engine 4/5 scripting engine built on top of the Blueprint system. Write, hook, and inspect logic in any UE4/5 game using a graph-based node editor on top of a reflection and hooking backend, without needing a matching source build.
-
+This project uses many pieces from https://github.com/Encryqed/Dumper-7. Huge thanks to them!
 ![Node editor overview](assets/NodeOverview.png)
 
 ## Features
