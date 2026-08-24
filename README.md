@@ -96,3 +96,7 @@ MIT, with an attribution requirement. See [LICENSE](LICENSE). Distribution or pu
 ## Support
 
 If UEMod is useful to you, consider supporting development on [Ko-fi](https://ko-fi.com/chris_tvyt).
+
+## disclaimer
+
+this, and all related .MD files are generated in part with AI assistance.
