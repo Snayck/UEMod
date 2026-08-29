@@ -11,6 +11,12 @@ UEGlobalsDetector::~UEGlobalsDetector() = default;
 
 namespace { enum { PAT_GOBJECTS = 0, PAT_FNAMES, PAT_GWORLD }; }
 
+static uintptr_t ResolveDisp(uintptr_t at, int len, int extra)
+{
+    uintptr_t dispAddr = at + len - 4;
+    return dispAddr + *reinterpret_cast<const int32_t*>(dispAddr) + extra;
+}
+
 // Raw scan, no C++ objects (SEH-compatible).
 // 1 = match at *out (cursor advanced), 0 = done, -1 = section faulted.
 static int ScanNextMatch(const uint8_t* s, size_t sz,
@@ -52,9 +58,37 @@ bool UEGlobalsDetector::FindUEGlobals() {
         {"48 8B 05 ? ? ? ? 48 8B 0C C8 48 8D 14 D1", PAT_GOBJECTS, 7},
         {"48 8B 05 ? ? ? ? 48 8B 14 C8",             PAT_GOBJECTS, 7},
         {"48 8D 0D ? ? ? ? E8 ? ? ? ? C6 05 ? ? ? ? ?", PAT_GOBJECTS, 7},
+        {"4C 8B 15 ? ? ? ? 8B 5D 10",                PAT_GOBJECTS, 7},
+        {"4C 8B 15 ? ? ? ? 44 8B 4D",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 4C 8B C3",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 48 8B 0C C8",             PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 8B 41 0C",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 4C 8B D3",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 48 8B D1",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 4D 85 C9",                PAT_GOBJECTS, 7},
+        {"48 8B 0D ? ? ? ? 48 85 C9 74",             PAT_GOBJECTS, 7},
+        {"4C 8B 05 ? ? ? ? 4C 8B C3",                PAT_GOBJECTS, 7},
+        {"4C 8B 05 ? ? ? ? 4D 85 C0",                PAT_GOBJECTS, 7},
+        {"48 89 05 ? ? ? ? 48 85 C0 74",             PAT_GOBJECTS, 7},
+        {"4C 8B 15 ? ? ? ? 4D 85 D2",                PAT_GOBJECTS, 7},
+        {"4C 8B 15 ? ? ? ? 4C 8B CA",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 49 8B 41",                PAT_GOBJECTS, 7},
+        {"4C 8B 0D ? ? ? ? 4D 8B 41",                PAT_GOBJECTS, 7},
         {"48 89 5C 24 ? 57 48 83 EC 20 48 8B D9 48 85 C9 75 ? 48 8B 0D", PAT_FNAMES, 11},
         {"48 8B 05 ? ? ? ? 48 85 C0 75 ? B9",        PAT_FNAMES, 7},
         {"48 8D 35 ? ? ? ? EB ? 48 8D 35",           PAT_FNAMES, 7},
+        {"48 89 1D ? ? ? ? 48 8B 5C 24 20 48 83 C4 28", PAT_FNAMES, 7},
+        {"48 89 1D ? ? ? ? 48 8B 5C 24 ? 48 83 C4",  PAT_FNAMES, 7},
+        {"48 89 1D ? ? ? ? 48 8B 74 24 ?",           PAT_FNAMES, 7},
+        {"48 89 1D ? ? ? ? EB",                      PAT_FNAMES, 7},
+        {"48 8B 1D ? ? ? ? 48 85 DB 75",             PAT_FNAMES, 7},
+        {"48 89 35 ? ? ? ? 48 8B 5C 24 ?",           PAT_FNAMES, 7},
+        {"48 89 3D ? ? ? ? 48 8B 5C 24 ?",           PAT_FNAMES, 7},
+        {"48 8D 05 ? ? ? ? 48 89 1D ? ? ? ?",        PAT_FNAMES, 7},
+        {"48 89 1D ? ? ? ? E8 ? ? ? ?",              PAT_FNAMES, 7},
+        {"48 8D 1D ? ? ? ? 48 89 1D ? ? ? ?",        PAT_FNAMES, 7},
+        {"48 89 1D ? ? ? ? 48 83 C4 28 C3",          PAT_FNAMES, 7},
+        {"48 8B 1D ? ? ? ? 48 85 DB 0F 85",          PAT_FNAMES, 7},
         {"48 89 05 ? ? ? ? 48 8B 4F 78",             PAT_GWORLD, 7},
         {"48 89 1D ? ? ? ? E8 ? ? ? ? 48 8B D8",     PAT_GWORLD, 7},
         {"48 8B 1D ? ? ? ? 48 85 DB 74",             PAT_GWORLD, 7},
@@ -151,35 +185,45 @@ bool UEGlobalsDetector::FindUEGlobals() {
                 if (p.type == PAT_FNAMES)
                 {
                     for (int offset : { p.resolveOffset, 7, 3 })
-                    {
-                        uintptr_t r = m_scanner->ResolveRelativeAddress(foundAddr, offset);
-                        if (ValidateFNames(r))
+                        for (int extra : { 4, -4 })
                         {
-                            m_fNames = r;
-                            foundFNames = true;
-                            std::cout << "  FNames found at: 0x" << std::hex << r << std::dec << std::endl;
+                            uintptr_t r = ResolveDisp(foundAddr, offset, extra);
+                            if (ValidateFNames(r))
+                            {
+                                m_fNames = r;
+                                foundFNames = true;
+                                std::cout << "  FNames found at: 0x" << std::hex << r << std::dec << std::endl;
+                                break;
+                            }
+                        }
+                    if (foundFNames) break;
+                }
+                else if (p.type == PAT_GOBJECTS)
+                {
+                    for (int extra : { 4, -4 })
+                    {
+                        uintptr_t r = ResolveDisp(foundAddr, p.resolveOffset, extra);
+                        if (ValidateGObjects(r))
+                        {
+                            m_gObjects = r;
+                            foundGObjects = true;
+                            std::cout << "  GObjects found at: 0x" << std::hex << r << std::dec << std::endl;
                             break;
                         }
                     }
                 }
-                else if (p.type == PAT_GOBJECTS)
-                {
-                    uintptr_t r = m_scanner->ResolveRelativeAddress(foundAddr, p.resolveOffset);
-                    if (ValidateGObjects(r))
-                    {
-                        m_gObjects = r;
-                        foundGObjects = true;
-                        std::cout << "  GObjects found at: 0x" << std::hex << r << std::dec << std::endl;
-                    }
-                }
                 else
                 {
-                    uintptr_t r = m_scanner->ResolveRelativeAddress(foundAddr, p.resolveOffset);
-                    if (ValidateGWorld(r))
+                    for (int extra : { 4, -4 })
                     {
-                        m_gWorld = r;
-                        foundGWorld = true;
-                        std::cout << "  GWorld found at: 0x" << std::hex << r << std::dec << std::endl;
+                        uintptr_t r = ResolveDisp(foundAddr, p.resolveOffset, extra);
+                        if (ValidateGWorld(r))
+                        {
+                            m_gWorld = r;
+                            foundGWorld = true;
+                            std::cout << "  GWorld found at: 0x" << std::hex << r << std::dec << std::endl;
+                            break;
+                        }
                     }
                 }
             }

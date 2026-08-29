@@ -18,6 +18,37 @@ namespace
     // plenty to detect layout while bounding cost on games with 100k+ objects.
     constexpr int32 kScanCap = 200000;
 
+    // Follow jmp / hotpatch thunk chains (guarded games interpose these in
+    // vtable slots): E9 rel32, EB rel8, "sub rcx/rsp,imm; jmp rel32".
+    uintptr_t FollowThunks(uintptr_t address, uintptr_t lo, uintptr_t hi)
+    {
+        for (int depth = 0; depth < 6 && address >= lo && address + 16 < hi; ++depth)
+        {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(address);
+            if (p[0] == 0xE9)
+            {
+                address = address + 5 + *reinterpret_cast<const int32_t*>(p + 1);
+                continue;
+            }
+            if (p[0] == 0xEB)
+            {
+                address = address + 2 + *reinterpret_cast<const int8_t*>(p + 1);
+                continue;
+            }
+            if (p[0] == 0x48 && (p[1] == 0x83 || p[1] == 0x81) && (p[2] == 0xE9 || p[2] == 0xC1))
+            {
+                const size_t subLen = (p[1] == 0x83) ? 4 : 7;
+                if (p[subLen] == 0xE9)
+                {
+                    address = address + subLen + 5 + *reinterpret_cast<const int32_t*>(p + subLen + 1);
+                    continue;
+                }
+            }
+            break;
+        }
+        return (address >= lo && address < hi) ? address : 0;
+    }
+
     void Log(const char* fmt, ...)
     {
         if (!OffsetFinder::Verbose) return;
@@ -548,16 +579,20 @@ bool OffsetFinder::DetectProcessEvent()
         if (fa < modBase || fa >= modEnd)
             break; // walked past the end of the vtable
 
-        const uint8_t* code = reinterpret_cast<const uint8_t*>(fa);
-        const size_t   room = static_cast<size_t>(modEnd - fa);
+        const uintptr_t target = FollowThunks(fa, modBase, modEnd);
+        if (!target) continue;
+
+        const uint8_t* code = reinterpret_cast<const uint8_t*>(target);
+        const size_t   room = static_cast<size_t>(modEnd - target);
         const size_t   r1   = room < 0x400 ? room : 0x400;
         const size_t   r2   = room < 0xF00 ? room : 0xF00;
 
         if (FindPatternInRange(pat1, code, r1) && FindPatternInRange(pat2, code, r2))
         {
-            Off::InSDK::ProcessEvent::FuncPtr = reinterpret_cast<void*>(fa);
+            Off::InSDK::ProcessEvent::FuncPtr = reinterpret_cast<void*>(target);
             Off::InSDK::ProcessEvent::Index   = i;
-            Log("ProcessEvent found at vtable[%d] = 0x%p", i, (void*)fa);
+            Log("ProcessEvent found at vtable[%d] = 0x%p%s", i, (void*)target,
+                target != fa ? " (through thunk)" : "");
             return true;
         }
     }
